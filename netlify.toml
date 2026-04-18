@@ -30,6 +30,11 @@
   status = 200
 
 [[redirects]]
+  from = "/t/*"
+  to = "/.netlify/functions/track-click/:splat"
+  status = 200
+
+[[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200

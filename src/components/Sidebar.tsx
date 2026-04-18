@@ -4,11 +4,15 @@ import {
   KanbanSquare,
   Activity as ActivityIcon,
   Users,
-  Inbox,
+  Inbox as InboxIcon,
   Webhook,
   Code2,
   Mic,
   LayoutTemplate,
+  Send,
+  Settings as SettingsIcon,
+  BarChart3,
+  FormInput,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -18,10 +22,14 @@ const NAV = [
   { to: "/activity", label: "Activity", icon: ActivityIcon },
   { to: "/agents", label: "Agents", icon: Users },
   { to: "/voice", label: "Voice", icon: Mic },
-  { to: "/forms", label: "Forms", icon: Inbox },
+  { to: "/outreach", label: "Outreach", icon: Send },
+  { to: "/inbox", label: "Inbox", icon: InboxIcon },
+  { to: "/analytics", label: "Analytics", icon: BarChart3 },
+  { to: "/forms", label: "Forms", icon: FormInput },
   { to: "/pages", label: "Pages", icon: LayoutTemplate },
   { to: "/webhooks", label: "Webhooks", icon: Webhook },
   { to: "/integrations", label: "Integrations", icon: Code2 },
+  { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 
 export default function Sidebar() {

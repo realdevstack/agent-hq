@@ -1,0 +1,645 @@
+import { useEffect, useMemo, useState } from "react";
+import { Link, useParams } from "react-router-dom";
+import {
+  ArrowLeft,
+  Beaker,
+  Check,
+  Loader2,
+  Mail,
+  MapPin,
+  MessageSquare,
+  MousePointerClick,
+  Play,
+  Send,
+  Sparkles,
+  Target,
+  Trash2,
+  Users,
+  AlertCircle,
+  FlaskConical,
+  CheckCircle2,
+} from "lucide-react";
+import PageHeader from "@/components/PageHeader";
+import GlassCard from "@/components/GlassCard";
+import Modal, { FormField, PrimaryButton, TextInput, TextArea } from "@/components/Modal";
+import { call } from "@/lib/api";
+import { timeAgo } from "@/lib/utils";
+
+type Campaign = {
+  id: string;
+  name: string;
+  query: string;
+  description?: string;
+  structured_query: { location: string; searchTerms: string[]; maxResults: number } | null;
+  status: string;
+  total_leads_found: number;
+  leads_imported: number;
+  emails_generated: number;
+  emails_sent: number;
+  emails_delivered: number;
+  emails_bounced: number;
+  emails_clicked: number;
+  emails_replied: number;
+  error_message?: string;
+  agentmail_inbox_id?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+type Lead = {
+  id: string;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  website: string | null;
+  address: string | null;
+  category: string | null;
+  rating: number | null;
+  status: string;
+  is_test: boolean;
+  created_at: string;
+};
+
+type EmailRow = {
+  id: string;
+  campaign_id: string;
+  lead_id: string;
+  to_email: string;
+  to_name: string;
+  subject: string;
+  body_text: string;
+  body_html: string;
+  status: string;
+  click_count?: number;
+  created_at: string;
+  updated_at: string;
+};
+
+type Reply = {
+  id: string;
+  from: string | null;
+  subject: string | null;
+  text: string | null;
+  received_at: string;
+  handled: boolean;
+};
+
+export default function CampaignDetail() {
+  const { id } = useParams<{ id: string }>();
+  const [campaign, setCampaign] = useState<Campaign | null>(null);
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [emails, setEmails] = useState<EmailRow[]>([]);
+  const [replies, setReplies] = useState<Reply[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [testModalOpen, setTestModalOpen] = useState(false);
+  const [generateModalOpen, setGenerateModalOpen] = useState(false);
+  const [busyAction, setBusyAction] = useState<"run" | "generate" | "send" | null>(null);
+
+  useEffect(() => {
+    if (!id) return;
+    void refresh();
+    // Light polling so counters tick live when webhooks arrive.
+    const t = setInterval(refresh, 6000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  async function refresh() {
+    if (!id) return;
+    try {
+      const [c, ls, es, rs] = await Promise.all([
+        call<Campaign>("outreach.campaign.get", { id }),
+        call<Lead[]>("outreach.leads.list", { campaign_id: id }),
+        call<EmailRow[]>("outreach.emails.list", { campaign_id: id }),
+        call<Reply[]>("outreach.replies.list", { campaign_id: id, limit: 20 }),
+      ]);
+      setCampaign(c);
+      setLeads(ls);
+      setEmails(es);
+      setReplies(rs);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Failed to load");
+    }
+  }
+
+  async function runScrape() {
+    if (!id) return;
+    setBusyAction("run");
+    setErr(null);
+    try {
+      await call("outreach.campaign.run", { id });
+      await refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Scrape failed");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function sendAll() {
+    if (!id) return;
+    const drafted = emails.filter((e) => e.status === "drafted").length;
+    if (drafted === 0) {
+      alert("No drafted emails to send. Generate drafts first.");
+      return;
+    }
+    if (!confirm(`Send ${drafted} emails via AgentMail? This will hit real recipients' inboxes.`)) return;
+    setBusyAction("send");
+    setErr(null);
+    try {
+      await call("outreach.emails.send", { campaign_id: id });
+      await refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Send failed");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
+  async function removeLead(leadId: string) {
+    if (!id) return;
+    try {
+      await call("outreach.leads.delete", { campaign_id: id, lead_id: leadId });
+      setLeads((prev) => prev.filter((l) => l.id !== leadId));
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Delete failed");
+    }
+  }
+
+  const counters = useMemo(() => {
+    if (!campaign) return null;
+    return {
+      leads: campaign.leads_imported ?? 0,
+      drafts: emails.filter((e) => e.status === "drafted").length,
+      sent: campaign.emails_sent ?? 0,
+      delivered: campaign.emails_delivered ?? 0,
+      bounced: campaign.emails_bounced ?? 0,
+      clicked: campaign.emails_clicked ?? 0,
+      replied: campaign.emails_replied ?? 0,
+    };
+  }, [campaign, emails]);
+
+  if (!campaign) {
+    return (
+      <div className="flex items-center gap-3 text-white/60">
+        <Loader2 size={16} className="animate-spin" /> Loading campaign…
+      </div>
+    );
+  }
+
+  const structured = campaign.structured_query;
+
+  return (
+    <>
+      <PageHeader
+        title={campaign.name}
+        subtitle={`"${campaign.query}"`}
+        right={
+          <Link
+            to="/outreach"
+            className="flex items-center gap-2 px-3 py-2 text-sm rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white/80 font-semibold transition"
+          >
+            <ArrowLeft size={14} /> All campaigns
+          </Link>
+        }
+      />
+
+      {err && (
+        <GlassCard className="mb-5 border-red-500/40 bg-red-500/10">
+          <div className="flex items-center gap-3 text-red-200">
+            <AlertCircle size={18} />
+            <span className="text-sm font-medium">{err}</span>
+          </div>
+        </GlassCard>
+      )}
+
+      {campaign.error_message && campaign.status === "failed" && (
+        <GlassCard className="mb-5 border-red-500/40 bg-red-500/10">
+          <div className="flex items-start gap-3 text-red-200">
+            <AlertCircle size={18} className="shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-semibold mb-1">Last action failed</p>
+              <p className="text-xs text-red-300/80">{campaign.error_message}</p>
+            </div>
+          </div>
+        </GlassCard>
+      )}
+
+      {/* Strategy summary */}
+      <GlassCard className="mb-5 bg-gradient-to-br from-primary/[0.05] to-purple/[0.05]">
+        <div className="flex items-start gap-5">
+          <div className="w-12 h-12 rounded-xl bg-primary/20 border border-primary/40 flex items-center justify-center shrink-0">
+            <Target size={20} className="text-primary" />
+          </div>
+          <div className="flex-1 space-y-2">
+            {structured && (
+              <>
+                <div className="flex items-center gap-2">
+                  <MapPin size={14} className="text-primary" />
+                  <span className="text-sm font-medium text-white">{structured.location}</span>
+                  <span className="text-xs text-white/45">·</span>
+                  <span className="text-xs text-white/55 font-mono">up to {structured.maxResults} leads</span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {structured.searchTerms.map((t, i) => (
+                    <span
+                      key={i}
+                      className="px-2 py-0.5 rounded-md bg-white/5 border border-white/10 text-white/65 text-[11px] font-mono"
+                    >
+                      {t}
+                    </span>
+                  ))}
+                </div>
+              </>
+            )}
+            <p className="text-xs text-white/50 pt-1">
+              Status: <span className="text-white/80 font-semibold uppercase tracking-wider">{campaign.status}</span>
+            </p>
+          </div>
+        </div>
+      </GlassCard>
+
+      {/* Action bar */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
+        <ActionButton
+          disabled={busyAction !== null || !structured}
+          onClick={runScrape}
+          busy={busyAction === "run"}
+          label={counters && counters.leads > 0 ? "Re-run scrape" : "Run Apify scrape"}
+          sublabel={counters && counters.leads > 0 ? `${counters.leads} leads imported` : "Fetch real businesses from Google Maps"}
+          icon={<Play size={16} />}
+          tint="primary"
+        />
+        <ActionButton
+          disabled={busyAction !== null || leads.filter((l) => l.email).length === 0}
+          onClick={() => setGenerateModalOpen(true)}
+          busy={busyAction === "generate"}
+          label="Generate emails"
+          sublabel={counters && counters.drafts > 0 ? `${counters.drafts} drafts ready` : "Gemini writes a personalised first touch per lead"}
+          icon={<Sparkles size={16} />}
+          tint="purple"
+        />
+        <ActionButton
+          disabled={busyAction !== null || (counters?.drafts ?? 0) === 0}
+          onClick={sendAll}
+          busy={busyAction === "send"}
+          label="Send campaign"
+          sublabel={counters && counters.sent > 0 ? `${counters.sent} sent · AgentMail` : "Fires all drafts from AgentMail inbox"}
+          icon={<Send size={16} />}
+          tint="accent"
+        />
+      </div>
+
+      {/* Counters */}
+      <div className="grid grid-cols-3 md:grid-cols-6 gap-2 mb-6">
+        <MiniStat label="Leads" value={counters?.leads ?? 0} icon={<Users size={14} />} tint="primary" />
+        <MiniStat label="Drafts" value={counters?.drafts ?? 0} icon={<Sparkles size={14} />} tint="purple" />
+        <MiniStat label="Sent" value={counters?.sent ?? 0} icon={<Send size={14} />} tint="primary" />
+        <MiniStat label="Delivered" value={counters?.delivered ?? 0} icon={<CheckCircle2 size={14} />} tint="green" />
+        <MiniStat label="Clicks" value={counters?.clicked ?? 0} icon={<MousePointerClick size={14} />} tint="accent" />
+        <MiniStat label="Replies" value={counters?.replied ?? 0} icon={<MessageSquare size={14} />} tint="green" />
+      </div>
+
+      {/* Recent replies — the stage-wow strip */}
+      {replies.length > 0 && (
+        <GlassCard className="mb-6 bg-gradient-to-br from-green-500/[0.06] to-transparent border-green-500/30">
+          <div className="flex items-center gap-2 mb-4">
+            <MessageSquare size={16} className="text-green-400" />
+            <h3 className="font-display text-sm tracking-widest uppercase text-green-300 font-bold">Recent replies</h3>
+            <span className="text-xs font-mono text-white/50">({replies.length})</span>
+          </div>
+          <div className="space-y-2">
+            {replies.slice(0, 5).map((r) => (
+              <div key={r.id} className="rounded-lg bg-black/30 border border-white/10 p-3 flex items-start gap-3">
+                <div className="w-8 h-8 rounded-full bg-green-500/20 border border-green-500/40 flex items-center justify-center shrink-0">
+                  <MessageSquare size={13} className="text-green-300" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-semibold text-white truncate">{r.from ?? "Unknown"}</span>
+                    <span className="text-xs text-white/40 font-mono">{timeAgo(r.received_at)}</span>
+                  </div>
+                  <p className="text-xs text-white/65 mb-1 truncate">{r.subject ?? "(no subject)"}</p>
+                  <p className="text-xs text-white/55 line-clamp-2">{r.text ?? ""}</p>
+                </div>
+                <Link
+                  to="/inbox"
+                  className="shrink-0 px-2.5 py-1 rounded-md bg-green-500/15 hover:bg-green-500/25 border border-green-500/40 text-green-300 text-[10px] font-bold tracking-wider uppercase transition"
+                >
+                  Open
+                </Link>
+              </div>
+            ))}
+          </div>
+        </GlassCard>
+      )}
+
+      {/* Leads table */}
+      <GlassCard className="mb-6">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <Users size={16} className="text-primary" />
+            <h3 className="font-display text-sm tracking-widest uppercase text-white/75 font-bold">Leads</h3>
+            <span className="text-xs font-mono text-white/50">({leads.length})</span>
+          </div>
+          <button
+            onClick={() => setTestModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent/15 hover:bg-accent/25 border border-accent/40 text-accent text-xs font-bold tracking-wide transition"
+          >
+            <FlaskConical size={13} /> Add test lead
+          </button>
+        </div>
+        {leads.length === 0 ? (
+          <div className="text-center py-10 text-white/50 text-sm">
+            No leads yet. Click <span className="text-white font-semibold">Run Apify scrape</span> above, or add a test lead with your own email.
+          </div>
+        ) : (
+          <div className="space-y-1">
+            {leads.map((l) => (
+              <div key={l.id} className="flex items-center gap-3 rounded-lg bg-white/[0.02] hover:bg-white/[0.04] border border-white/[0.06] px-3 py-2 transition">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-medium text-white truncate">{l.name}</span>
+                    {l.is_test && (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-accent/20 border border-accent/40 text-accent text-[9px] font-bold tracking-wider uppercase">
+                        <Beaker size={9} /> Test
+                      </span>
+                    )}
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white/5 text-white/45">
+                      {l.status}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3 text-[11px] text-white/50 font-mono mt-0.5">
+                    {l.email && <span>{l.email}</span>}
+                    {l.category && <span>· {l.category}</span>}
+                    {l.rating !== null && <span>· ★ {l.rating}</span>}
+                    {l.address && <span className="truncate max-w-xs">· {l.address}</span>}
+                  </div>
+                </div>
+                <button
+                  onClick={() => removeLead(l.id)}
+                  className="shrink-0 w-8 h-8 rounded-md bg-red-500/10 hover:bg-red-500/20 border border-red-500/25 text-red-300 flex items-center justify-center transition"
+                  title="Remove"
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </GlassCard>
+
+      {/* Email drafts */}
+      <GlassCard className="mb-6">
+        <div className="flex items-center gap-2 mb-4">
+          <Mail size={16} className="text-purple" />
+          <h3 className="font-display text-sm tracking-widest uppercase text-white/75 font-bold">Emails</h3>
+          <span className="text-xs font-mono text-white/50">({emails.length})</span>
+        </div>
+        {emails.length === 0 ? (
+          <div className="text-center py-10 text-white/50 text-sm">
+            No drafts yet. Click <span className="text-white font-semibold">Generate emails</span> after leads are in.
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {emails.map((e) => (
+              <div key={e.id} className="rounded-lg bg-white/[0.02] border border-white/[0.06] p-3">
+                <div className="flex items-center gap-2 flex-wrap mb-1">
+                  <span className="text-xs text-white/50 font-mono">to</span>
+                  <span className="text-sm text-white font-medium truncate">{e.to_email}</span>
+                  <StatusPill status={e.status} />
+                  {(e.click_count ?? 0) > 0 && (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-accent/15 border border-accent/30 text-accent text-[10px] font-bold">
+                      <MousePointerClick size={10} /> {e.click_count}
+                    </span>
+                  )}
+                </div>
+                <p className="text-sm font-semibold text-white mb-0.5">{e.subject}</p>
+                <p className="text-xs text-white/55 line-clamp-2 whitespace-pre-wrap">{e.body_text}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </GlassCard>
+
+      {/* Add test lead modal */}
+      <AddTestLeadModal
+        open={testModalOpen}
+        onClose={() => setTestModalOpen(false)}
+        campaignId={campaign.id}
+        onAdded={() => void refresh()}
+      />
+
+      {/* Generate emails modal */}
+      <GenerateEmailsModal
+        open={generateModalOpen}
+        onClose={() => setGenerateModalOpen(false)}
+        campaignId={campaign.id}
+        setBusyAction={setBusyAction}
+        onComplete={() => void refresh()}
+        setErr={setErr}
+      />
+    </>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Sub-components
+
+function ActionButton({
+  onClick,
+  disabled,
+  busy,
+  label,
+  sublabel,
+  icon,
+  tint,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  busy?: boolean;
+  label: string;
+  sublabel: string;
+  icon: React.ReactNode;
+  tint: "primary" | "purple" | "accent";
+}) {
+  const tints: Record<typeof tint, string> = {
+    primary: "from-primary/15 to-primary/5 border-primary/30 hover:border-primary/60 text-primary",
+    purple: "from-purple/15 to-purple/5 border-purple/30 hover:border-purple/60 text-purple",
+    accent: "from-accent/15 to-accent/5 border-accent/30 hover:border-accent/60 text-accent",
+  };
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`text-left rounded-xl p-4 bg-gradient-to-br ${tints[tint]} border transition disabled:opacity-40 disabled:cursor-not-allowed`}
+    >
+      <div className="flex items-center gap-2 mb-1.5">
+        {busy ? <Loader2 size={16} className="animate-spin" /> : icon}
+        <span className="font-display text-sm font-bold tracking-wide text-white">{label}</span>
+      </div>
+      <p className="text-xs text-white/60">{sublabel}</p>
+    </button>
+  );
+}
+
+function MiniStat({ label, value, icon, tint }: { label: string; value: number; icon: React.ReactNode; tint: "primary" | "purple" | "accent" | "green" }) {
+  const tints: Record<typeof tint, string> = {
+    primary: "text-primary",
+    purple: "text-purple",
+    accent: "text-accent",
+    green: "text-green-300",
+  };
+  return (
+    <div className="rounded-lg bg-white/[0.02] border border-white/[0.06] px-3 py-2">
+      <div className={`flex items-center gap-1.5 mb-0.5 ${tints[tint]}`}>{icon}<span className="text-[10px] uppercase tracking-widest font-bold">{label}</span></div>
+      <div className="font-display text-xl font-black text-white tabular-nums">{value.toLocaleString()}</div>
+    </div>
+  );
+}
+
+function StatusPill({ status }: { status: string }) {
+  const map: Record<string, string> = {
+    drafted: "bg-white/5 border-white/15 text-white/60",
+    sent: "bg-primary/15 border-primary/40 text-primary",
+    delivered: "bg-green-500/15 border-green-500/40 text-green-300",
+    bounced: "bg-red-500/15 border-red-500/40 text-red-300",
+    clicked: "bg-accent/15 border-accent/40 text-accent",
+    replied: "bg-green-500/25 border-green-500/60 text-green-200",
+    complained: "bg-red-500/15 border-red-500/40 text-red-300",
+    failed: "bg-red-500/15 border-red-500/40 text-red-300",
+  };
+  return (
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded-md border text-[10px] font-bold tracking-wider uppercase ${map[status] ?? "bg-white/5 border-white/10 text-white/50"}`}>
+      {status}
+    </span>
+  );
+}
+
+function AddTestLeadModal({ open, onClose, campaignId, onAdded }: { open: boolean; onClose: () => void; campaignId: string; onAdded: () => void }) {
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [notes, setNotes] = useState("Use this lead to test the full send → reply loop.");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!email.trim()) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await call("outreach.leads.add_test", {
+        campaign_id: campaignId,
+        email: email.trim(),
+        name: name.trim() || email.split("@")[0],
+        notes,
+      });
+      setEmail("");
+      setName("");
+      onAdded();
+      onClose();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Add failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title="Add a test lead" description="Seed your own email into this campaign so you can watch the send → reply loop end-to-end." maxWidth="max-w-md">
+      <form onSubmit={submit} className="space-y-4">
+        <FormField label="Your email" required hint="Replies to this address will appear in your dashboard within seconds.">
+          <TextInput type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@gmail.com" required autoFocus />
+        </FormField>
+        <FormField label="Display name" hint="Optional — what the lead shows as in the table.">
+          <TextInput value={name} onChange={(e) => setName(e.target.value)} placeholder="Your Test Lead" />
+        </FormField>
+        <FormField label="Notes" hint="Passed to Gemini as context for the draft.">
+          <TextArea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} />
+        </FormField>
+        {err && <div className="rounded-lg bg-red-500/15 border border-red-500/40 px-4 py-2 text-sm text-red-200">{err}</div>}
+        <div className="flex items-center gap-3">
+          <PrimaryButton type="submit" loading={busy} disabled={!email.trim() || busy}>
+            <FlaskConical size={14} /> Add test lead
+          </PrimaryButton>
+          <button type="button" onClick={onClose} className="px-4 py-3 text-sm text-white/60 hover:text-white font-medium">Cancel</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function GenerateEmailsModal({
+  open,
+  onClose,
+  campaignId,
+  setBusyAction,
+  onComplete,
+  setErr,
+}: {
+  open: boolean;
+  onClose: () => void;
+  campaignId: string;
+  setBusyAction: (v: "run" | "generate" | "send" | null) => void;
+  onComplete: () => void;
+  setErr: (s: string | null) => void;
+}) {
+  const [senderName, setSenderName] = useState("");
+  const [senderCompany, setSenderCompany] = useState("");
+  const [senderOffer, setSenderOffer] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setBusyAction("generate");
+    setErr(null);
+    try {
+      const result = await call<{ generated: number; errors: Array<{ lead_id: string; error: string }> }>(
+        "outreach.emails.generate",
+        {
+          campaign_id: campaignId,
+          sender_name: senderName,
+          sender_company: senderCompany,
+          sender_offer: senderOffer,
+        },
+      );
+      if (result.errors.length > 0 && result.generated === 0) {
+        setErr(`Drafting failed for all leads: ${result.errors[0]?.error ?? "unknown"}`);
+      }
+      onComplete();
+      onClose();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Generate failed");
+    } finally {
+      setBusy(false);
+      setBusyAction(null);
+    }
+  }
+
+  return (
+    <Modal open={open} onClose={onClose} title="Generate emails" description="Gemini writes a personalised first-touch for every lead with an email. About 8 seconds for 50 leads." maxWidth="max-w-lg">
+      <form onSubmit={submit} className="space-y-4">
+        <FormField label="Your name" hint="Signed at the bottom of the email.">
+          <TextInput value={senderName} onChange={(e) => setSenderName(e.target.value)} placeholder="e.g. Mani" autoFocus />
+        </FormField>
+        <FormField label="Your company" hint="Optional — mentioned as credibility anchor.">
+          <TextInput value={senderCompany} onChange={(e) => setSenderCompany(e.target.value)} placeholder="e.g. Vertical AI" />
+        </FormField>
+        <FormField label="Value / offer" hint="One sentence describing what you're offering. Gemini shapes the hook around this." required>
+          <TextArea value={senderOffer} onChange={(e) => setSenderOffer(e.target.value)} rows={3} placeholder="e.g. We ship AI voice agents for SMBs in 30 days, flat-fee, no retainer." required />
+        </FormField>
+        <div className="flex items-center gap-3">
+          <PrimaryButton type="submit" loading={busy} disabled={!senderOffer.trim() || busy}>
+            <Sparkles size={14} /> Generate drafts
+          </PrimaryButton>
+          <button type="button" onClick={onClose} className="px-4 py-3 text-sm text-white/60 hover:text-white font-medium">Cancel</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+// Unused import guard — keeps tree-shaker from complaining during early dev.
+void Check;

@@ -34,6 +34,82 @@ const VOICE_CONFIG = "agent-hq-voice-config";
 const VOICE_SESSIONS = "agent-hq-voice-sessions";
 const VOICE_INVITATIONS = "agent-hq-voice-invitations";
 const PAGES = "agent-hq-pages";
+const SERVICE_CONFIG = "agent-hq-service-config"; // third-party API keys: apify, agentmail, gemini (shared)
+const OUTREACH_CAMPAIGNS = "agent-hq-outreach-campaigns";
+const OUTREACH_LEADS = "agent-hq-outreach-leads"; // key: `<campaign_id>/<lead_id>`
+const OUTREACH_EMAILS = "agent-hq-outreach-emails"; // key: `<campaign_id>/<email_id>`
+const OUTREACH_REPLIES = "agent-hq-outreach-replies"; // inbound replies from AgentMail
+
+// Service keys we onboard. `gemini` doubles as the voice key — reads through VOICE_CONFIG for back-compat.
+type ServiceKey = "gemini" | "apify" | "agentmail";
+const SERVICE_KEYS: ServiceKey[] = ["gemini", "apify", "agentmail"];
+
+type ServiceConfigRecord = { key: string; updated_at: string; last_test?: { ok: boolean; at: string; message?: string } };
+
+// Redact a stored key for display — keep first 4 and last 4 chars so the
+// user can visually confirm it's theirs without exposing the full secret.
+function maskKey(raw: string): string {
+  if (!raw) return "";
+  if (raw.length <= 10) return "•".repeat(raw.length);
+  return `${raw.slice(0, 4)}${"•".repeat(Math.max(4, raw.length - 8))}${raw.slice(-4)}`;
+}
+
+async function readServiceKey(name: ServiceKey): Promise<string | null> {
+  if (name === "gemini") {
+    // Back-compat: voice wrote the Gemini key to VOICE_CONFIG first.
+    const voice = await readJson<{ gemini_key?: string }>(store(VOICE_CONFIG), "config");
+    if (voice?.gemini_key) return voice.gemini_key;
+  }
+  const rec = await readJson<ServiceConfigRecord>(store(SERVICE_CONFIG), name);
+  return rec?.key ?? null;
+}
+
+async function writeServiceKey(name: ServiceKey, key: string, test?: ServiceConfigRecord["last_test"]): Promise<void> {
+  const rec: ServiceConfigRecord = { key, updated_at: new Date().toISOString(), last_test: test };
+  await writeJson<ServiceConfigRecord>(store(SERVICE_CONFIG), name, rec);
+  // Keep voice store in sync when the gemini key is set, so voice.config.get still works.
+  if (name === "gemini") {
+    await writeJson(store(VOICE_CONFIG), "config", { gemini_key: key, updated_at: rec.updated_at });
+  }
+}
+
+// Light-touch "does this key actually work" tests. We do NOT hit the full
+// service surface here — just a cheap endpoint that returns 200 on a valid
+// key and 401/403 on an invalid one. Keeps onboarding fast.
+async function testServiceKey(name: ServiceKey, key: string): Promise<{ ok: boolean; message: string }> {
+  try {
+    if (name === "gemini") {
+      // Gemini "models" list is a cheap authenticated GET.
+      const r = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}&pageSize=1`,
+      );
+      if (r.ok) return { ok: true, message: "Gemini key verified" };
+      const body = await r.text();
+      return { ok: false, message: `Gemini rejected key (${r.status}): ${body.slice(0, 120)}` };
+    }
+    if (name === "apify") {
+      // Apify "user/me" requires a valid token.
+      const r = await fetch("https://api.apify.com/v2/users/me", {
+        headers: { Authorization: `Bearer ${key}` },
+      });
+      if (r.ok) return { ok: true, message: "Apify key verified" };
+      const body = await r.text();
+      return { ok: false, message: `Apify rejected key (${r.status}): ${body.slice(0, 120)}` };
+    }
+    if (name === "agentmail") {
+      // AgentMail "inboxes" list is a cheap authenticated GET.
+      const r = await fetch("https://api.agentmail.to/v0/inboxes?limit=1", {
+        headers: { Authorization: `Bearer ${key}` },
+      });
+      if (r.ok) return { ok: true, message: "AgentMail key verified" };
+      const body = await r.text();
+      return { ok: false, message: `AgentMail rejected key (${r.status}): ${body.slice(0, 120)}` };
+    }
+    return { ok: false, message: `Unknown service: ${name}` };
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : "Network error" };
+  }
+}
 
 // Write activity log row — fire and forget.
 async function logActivity(entry: {
@@ -46,6 +122,294 @@ async function logActivity(entry: {
   const created_at = new Date().toISOString();
   const key = `${created_at}-${id}`;
   await writeJson(store(ACTIVITY), key, { id, created_at, ...entry });
+}
+
+// ── AgentMail helpers ──────────────────────────────────────────────
+// Thin fetch wrappers. We don't use the official SDK to keep the function
+// bundle small and avoid @agentmail/sdk's surface area surprises.
+
+async function agentmailFetch(key: string, path: string, init: RequestInit = {}): Promise<Response> {
+  return fetch(`https://api.agentmail.to/v0${path}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+      ...(init.headers ?? {}),
+    },
+  });
+}
+
+type AgentMailInbox = { inbox_id: string; username?: string; domain?: string; display_name?: string };
+
+async function getOrCreateCampaignInbox(key: string, campaignName: string): Promise<AgentMailInbox> {
+  // Try to list inboxes first — if we have one already, reuse it. Most
+  // attendees will only ever have one default inbox on free tier. We pick
+  // the first one. If none exists, create a default.
+  const listR = await agentmailFetch(key, "/inboxes?limit=10");
+  if (listR.ok) {
+    const body = (await listR.json()) as { inboxes?: AgentMailInbox[] };
+    if (body.inboxes && body.inboxes.length > 0) return body.inboxes[0];
+  }
+  // Create a new inbox. AgentMail picks a username if we don't.
+  const createR = await agentmailFetch(key, "/inboxes", {
+    method: "POST",
+    body: JSON.stringify({ display_name: campaignName.slice(0, 80) }),
+  });
+  if (!createR.ok) {
+    const txt = await createR.text();
+    throw new Error(`AgentMail inbox create failed (${createR.status}): ${txt.slice(0, 200)}`);
+  }
+  return (await createR.json()) as AgentMailInbox;
+}
+
+// Rewrite every <a href="..."> in the HTML body to route through the
+// AgentHQ click tracker. The tracker function lives at /t/<token> and
+// 302s to the original URL after logging the click.
+function rewriteLinksForTracking(html: string, baseUrl: string, campaignId: string, leadId: string, emailId: string): string {
+  return html.replace(/href="([^"]+)"/gi, (full, rawUrl) => {
+    if (!rawUrl || typeof rawUrl !== "string") return full;
+    // Skip anchor-only, mailto:, tel:, and already-tracked links.
+    if (/^(#|mailto:|tel:|sms:)/i.test(rawUrl)) return full;
+    if (rawUrl.startsWith(`${baseUrl}/t/`)) return full;
+    const payload = { c: campaignId, l: leadId, e: emailId, u: rawUrl };
+    const token = Buffer.from(JSON.stringify(payload)).toString("base64url");
+    return `href="${baseUrl}/t/${token}"`;
+  });
+}
+
+// ── Gemini email drafting ─────────────────────────────────────────────
+
+const DRAFT_SYSTEM_PROMPT = `You write short, high-reply-rate cold outreach emails. Rules:
+- 70–120 words. Short subject (5–8 words, no emoji).
+- One clear observation about the recipient's business from the data provided.
+- One specific value hook tied to the sender's context.
+- One low-friction ask (question or 15-min call).
+- No fluff, no "I hope this finds you well", no superlatives, no fake flattery.
+- First-person, lowercase-friendly, conversational.
+- Output ONLY JSON: { "subject": "...", "body_text": "...", "body_html": "<p>...</p>" }.
+- body_html = plain paragraphs with <p> tags only. No inline styles.`;
+
+type EmailDraft = { subject: string; body_text: string; body_html: string };
+
+async function generateEmailDraft(
+  geminiKey: string,
+  lead: { name?: string; company?: string; website?: string; category?: string; address?: string; notes?: string },
+  senderContext: { sender_name?: string; sender_company?: string; sender_offer?: string; campaign_query?: string },
+): Promise<EmailDraft> {
+  const leadSummary = [
+    lead.name ? `Business: ${lead.name}` : null,
+    lead.company && lead.company !== lead.name ? `Company: ${lead.company}` : null,
+    lead.category ? `Category: ${lead.category}` : null,
+    lead.address ? `Location: ${lead.address}` : null,
+    lead.website ? `Website: ${lead.website}` : null,
+    lead.notes ? `Notes: ${lead.notes}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const senderSummary = [
+    senderContext.sender_name ? `Sender name: ${senderContext.sender_name}` : null,
+    senderContext.sender_company ? `Sender company: ${senderContext.sender_company}` : null,
+    senderContext.sender_offer ? `Offer / value: ${senderContext.sender_offer}` : null,
+    senderContext.campaign_query ? `ICP context: ${senderContext.campaign_query}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const body = {
+    systemInstruction: { role: "system", parts: [{ text: DRAFT_SYSTEM_PROMPT }] },
+    contents: [
+      {
+        role: "user",
+        parts: [{ text: `RECIPIENT\n${leadSummary || "(no data)"}\n\nSENDER\n${senderSummary || "(no context)"}` }],
+      },
+    ],
+    generationConfig: { temperature: 0.7, responseMimeType: "application/json" },
+  };
+  const r = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(geminiKey)}`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
+  );
+  if (!r.ok) {
+    const txt = await r.text();
+    throw new Error(`Gemini draft failed (${r.status}): ${txt.slice(0, 200)}`);
+  }
+  const data = (await r.json()) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  if (!text) throw new Error("Gemini returned empty draft");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    const stripped = text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
+    parsed = JSON.parse(stripped);
+  }
+  const obj = parsed as Partial<EmailDraft>;
+  return {
+    subject: String(obj.subject ?? "").trim() || "Quick question",
+    body_text: String(obj.body_text ?? "").trim(),
+    body_html: String(obj.body_html ?? "").trim(),
+  };
+}
+
+// ── Apify helpers ─────────────────────────────────────────────────────
+
+type ApifyLead = {
+  title?: string;
+  subTitle?: string;
+  category?: string;
+  categoryName?: string;
+  address?: string;
+  neighborhood?: string;
+  street?: string;
+  city?: string;
+  state?: string;
+  countryCode?: string;
+  phone?: string;
+  phoneUnformatted?: string;
+  website?: string;
+  url?: string;
+  emails?: string[];
+  totalScore?: number;
+  reviewsCount?: number;
+  placeId?: string;
+  // We pass through whatever Apify gives us; this type only documents the
+  // fields we actually read.
+};
+
+async function runApifyGoogleMapsScraper(
+  apifyKey: string,
+  searchTerms: string[],
+  location: string,
+  maxResults: number,
+): Promise<Array<Record<string, unknown>>> {
+  // compass/crawler-google-places is the well-known cheap actor. Runs take
+  // 30s–3min depending on maxCrawledPlacesPerSearch. We use runSync-get-dataset-items
+  // so we get results back in one HTTP call (up to Apify's 5-min timeout).
+  const input = {
+    searchStringsArray: searchTerms,
+    locationQuery: location,
+    maxCrawledPlacesPerSearch: Math.max(5, Math.min(200, Math.ceil(maxResults / Math.max(1, searchTerms.length)))),
+    language: "en",
+    scrapePlaceDetailPage: true,
+    skipClosedPlaces: true,
+    allPlacesNoSearchAction: "",
+  };
+  const r = await fetch(
+    `https://api.apify.com/v2/acts/compass~crawler-google-places/run-sync-get-dataset-items?token=${encodeURIComponent(apifyKey)}&timeout=180`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    },
+  );
+  if (!r.ok) {
+    const txt = await r.text();
+    throw new Error(`Apify run failed (${r.status}): ${txt.slice(0, 300)}`);
+  }
+  const items = (await r.json()) as Array<Record<string, unknown>>;
+  return items.slice(0, maxResults);
+}
+
+function extractLeadFromApify(raw: Record<string, unknown>): {
+  name: string;
+  email: string | null;
+  phone: string | null;
+  website: string | null;
+  address: string | null;
+  category: string | null;
+  rating: number | null;
+  reviews_count: number | null;
+  maps_url: string | null;
+} {
+  const r = raw as ApifyLead;
+  const emails = Array.isArray(r.emails) ? r.emails.filter((e) => typeof e === "string" && e.includes("@")) : [];
+  return {
+    name: String(r.title ?? r.subTitle ?? "Unknown"),
+    email: emails[0] ?? null,
+    phone: (r.phone as string | undefined) ?? (r.phoneUnformatted as string | undefined) ?? null,
+    website: (r.website as string | undefined) ?? null,
+    address: (r.address as string | undefined) ?? null,
+    category: (r.categoryName as string | undefined) ?? (r.category as string | undefined) ?? null,
+    rating: typeof r.totalScore === "number" ? r.totalScore : null,
+    reviews_count: typeof r.reviewsCount === "number" ? r.reviewsCount : null,
+    maps_url: (r.url as string | undefined) ?? null,
+  };
+}
+
+// ── OUTREACH helpers ───────────────────────────────────────────────
+// Turns a free-text ICP description into a structured query the Apify
+// Google Maps scraper can run. We ask Gemini for JSON only, validate the
+// shape, and fall back to a single literal search term if parsing fails
+// (so the preview always returns *something* usable).
+
+type StructuredQuery = { location: string; searchTerms: string[]; maxResults: number };
+
+const PREVIEW_SYSTEM_PROMPT = `You convert a natural-language ICP description into a structured Google Maps search plan.
+
+Output ONLY a JSON object with this exact shape — no prose, no markdown, no code fences:
+{ "location": "<city, state/country>", "searchTerms": ["<term 1>", "<term 2>", ...], "maxResults": <int> }
+
+Rules:
+- "location" = the geographic target the user described. If multiple cities, pick the primary one. If the user named a region/metro, pick a representative anchor city (e.g. "San Francisco Bay Area" -> "San Francisco, CA").
+- "searchTerms" = 1–5 distinct business-type queries. Each should be a short phrase a human would type into Google Maps. DO NOT append the location to the search term — that's the "location" field's job. Expand synonyms the user implied (e.g. "law firms" -> "personal injury lawyer", "family lawyer" if context warrants).
+- "maxResults" = clamp the user-requested number into [10, 200]. If unspecified, use 50.
+- Always return valid JSON. No trailing commas. Double-quoted strings only.`;
+
+async function previewIcpWithGemini(geminiKey: string, userQuery: string, maxResultsHint?: number): Promise<StructuredQuery> {
+  const body = {
+    systemInstruction: { role: "system", parts: [{ text: PREVIEW_SYSTEM_PROMPT }] },
+    contents: [
+      {
+        role: "user",
+        parts: [
+          {
+            text: `ICP description:\n${userQuery}\n\nMax results hint: ${
+              typeof maxResultsHint === "number" ? maxResultsHint : "unspecified"
+            }`,
+          },
+        ],
+      },
+    ],
+    generationConfig: {
+      temperature: 0.2,
+      responseMimeType: "application/json",
+    },
+  };
+  const r = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(geminiKey)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+  if (!r.ok) {
+    const txt = await r.text();
+    throw new Error(`Gemini preview failed (${r.status}): ${txt.slice(0, 200)}`);
+  }
+  const data = (await r.json()) as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+  };
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  if (!text) throw new Error("Gemini returned empty response");
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    // Sometimes the model wraps in ```json fences despite the mime type —
+    // strip them and retry.
+    const stripped = text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
+    parsed = JSON.parse(stripped);
+  }
+  const obj = parsed as Partial<StructuredQuery>;
+  const location = typeof obj.location === "string" && obj.location.trim() ? obj.location.trim() : "Unknown";
+  const terms = Array.isArray(obj.searchTerms) ? obj.searchTerms.filter((t) => typeof t === "string" && t.trim()) : [];
+  const searchTerms = terms.length > 0 ? terms.map((t) => (t as string).trim()).slice(0, 5) : [userQuery.slice(0, 80)];
+  const rawMax = typeof obj.maxResults === "number" ? obj.maxResults : maxResultsHint ?? 50;
+  const maxResults = Math.max(10, Math.min(200, Math.round(rawMax)));
+  return { location, searchTerms, maxResults };
 }
 
 export const handler: Handler = async (event) => {
@@ -296,6 +660,76 @@ export const handler: Handler = async (event) => {
         return ok({ cleared: true });
       }
 
+      // ── SERVICE CONFIG (gemini / apify / agentmail) ───────────────
+      // Used by the Onboarding wizard and /settings page. Each service
+      // is tested against its own auth endpoint before we save, so by
+      // the time the wizard dismisses all three keys are known-good.
+      case "config.status": {
+        // Returns which keys are set + a masked preview. Never returns raw keys.
+        const out: Record<string, { configured: boolean; masked: string | null; updated_at?: string; last_test?: ServiceConfigRecord["last_test"] }> = {};
+        for (const name of SERVICE_KEYS) {
+          const key = await readServiceKey(name);
+          const rec = await readJson<ServiceConfigRecord>(store(SERVICE_CONFIG), name);
+          out[name] = {
+            configured: !!key,
+            masked: key ? maskKey(key) : null,
+            updated_at: rec?.updated_at,
+            last_test: rec?.last_test,
+          };
+        }
+        return ok(out);
+      }
+      case "config.set": {
+        const { service, key, skip_test = false } = params as Record<string, unknown>;
+        if (!service || !SERVICE_KEYS.includes(service as ServiceKey)) {
+          return fail(400, `service must be one of: ${SERVICE_KEYS.join(", ")}`);
+        }
+        if (typeof key !== "string" || !key.trim()) return fail(400, "key required");
+        const trimmed = key.trim();
+        let test: ServiceConfigRecord["last_test"] | undefined;
+        if (!skip_test) {
+          const result = await testServiceKey(service as ServiceKey, trimmed);
+          test = { ok: result.ok, at: new Date().toISOString(), message: result.message };
+          if (!result.ok) {
+            // Store nothing on test failure — surface the rejection to the caller.
+            return fail(400, result.message);
+          }
+        }
+        await writeServiceKey(service as ServiceKey, trimmed, test);
+        await logActivity({
+          agent_id: identity?.kind === "agent" ? identity.agent_id : null,
+          category: "system",
+          summary: `${service} API key configured`,
+        });
+        return ok({ configured: true, test });
+      }
+      case "config.test": {
+        // Re-run the validity test for an already-stored key.
+        const { service } = params as Record<string, unknown>;
+        if (!service || !SERVICE_KEYS.includes(service as ServiceKey)) {
+          return fail(400, `service must be one of: ${SERVICE_KEYS.join(", ")}`);
+        }
+        const key = await readServiceKey(service as ServiceKey);
+        if (!key) return fail(404, `${service} key not configured`);
+        const result = await testServiceKey(service as ServiceKey, key);
+        const rec: ServiceConfigRecord = {
+          key,
+          updated_at: (await readJson<ServiceConfigRecord>(store(SERVICE_CONFIG), service as string))?.updated_at ?? new Date().toISOString(),
+          last_test: { ok: result.ok, at: new Date().toISOString(), message: result.message },
+        };
+        await writeJson(store(SERVICE_CONFIG), service as string, rec);
+        return ok(rec.last_test);
+      }
+      case "config.clear": {
+        const { service } = params as Record<string, unknown>;
+        if (!service || !SERVICE_KEYS.includes(service as ServiceKey)) {
+          return fail(400, `service must be one of: ${SERVICE_KEYS.join(", ")}`);
+        }
+        await store(SERVICE_CONFIG).delete(service as string);
+        if (service === "gemini") await store(VOICE_CONFIG).delete("config");
+        return ok({ cleared: true });
+      }
+
       // ── VOICE SESSIONS (past conversation transcripts) ────────────
       case "voice.session.save": {
         const { started_at, ended_at, transcripts, tools, invitation_id } = params as Record<string, unknown>;
@@ -468,6 +902,616 @@ export const handler: Handler = async (event) => {
         if (!slug) return fail(400, "slug required");
         await store(PAGES).delete(slug);
         return ok({ slug, deleted: true });
+      }
+
+      // ── OUTREACH (ICP → leads → emails → replies) ─────────────────
+      // Phase 2 scope: natural-language preview via Gemini + campaign CRUD.
+      // Phase 3 will wire the Apify run, AgentMail send, and reply ingestion.
+
+      case "outreach.preview": {
+        // Turn free-text ICP into { location, searchTerms[], maxResults }.
+        // This is cheap and safe to call repeatedly — no side effects.
+        const { query, max_results } = params as Record<string, unknown>;
+        if (typeof query !== "string" || !query.trim()) return fail(400, "query required");
+        const geminiKey = await readServiceKey("gemini");
+        if (!geminiKey) return fail(400, "Gemini key not configured — open Settings and add it first.");
+        try {
+          const structured = await previewIcpWithGemini(
+            geminiKey,
+            query.trim(),
+            typeof max_results === "number" ? max_results : undefined,
+          );
+          return ok(structured);
+        } catch (err) {
+          return fail(500, err instanceof Error ? err.message : "Preview failed");
+        }
+      }
+
+      case "outreach.campaign.create": {
+        const { name, query, structured_query, description } = params as Record<string, unknown>;
+        if (typeof name !== "string" || !name.trim()) return fail(400, "name required");
+        if (typeof query !== "string" || !query.trim()) return fail(400, "query required");
+        const id = nanoid(12);
+        const now = new Date().toISOString();
+        const campaign = {
+          id,
+          name: name.trim(),
+          query: query.trim(),
+          description: typeof description === "string" ? description : "",
+          structured_query: (structured_query as StructuredQuery) ?? null,
+          status: "draft" as const, // draft | searching | ready | sending | completed | failed
+          total_leads_found: 0,
+          leads_imported: 0,
+          emails_generated: 0,
+          emails_sent: 0,
+          emails_delivered: 0,
+          emails_bounced: 0,
+          emails_clicked: 0,
+          emails_replied: 0,
+          created_by: identity?.kind === "agent" ? identity.agent_id : null,
+          created_at: now,
+          updated_at: now,
+        };
+        await writeJson(store(OUTREACH_CAMPAIGNS), id, campaign);
+        await logActivity({
+          agent_id: identity?.kind === "agent" ? identity.agent_id : null,
+          category: "content",
+          summary: `Outreach campaign created: "${campaign.name}"`,
+          details: { campaign_id: id, query: campaign.query },
+        });
+        return ok(campaign);
+      }
+
+      case "outreach.campaign.list": {
+        const all = await listJson<{ created_at: string }>(store(OUTREACH_CAMPAIGNS));
+        all.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+        return ok(all);
+      }
+
+      case "outreach.campaign.get": {
+        const { id } = params as Record<string, string>;
+        if (!id) return fail(400, "id required");
+        const record = await readJson(store(OUTREACH_CAMPAIGNS), id);
+        if (!record) return fail(404, "campaign not found");
+        return ok(record);
+      }
+
+      case "outreach.campaign.update": {
+        const { id, ...patch } = params as Record<string, unknown>;
+        if (!id || typeof id !== "string") return fail(400, "id required");
+        const s = store(OUTREACH_CAMPAIGNS);
+        const existing = await readJson<Record<string, unknown>>(s, id);
+        if (!existing) return fail(404, "campaign not found");
+        const updated = { ...existing, ...patch, id, updated_at: new Date().toISOString() };
+        await writeJson(s, id, updated);
+        return ok(updated);
+      }
+
+      case "outreach.campaign.delete": {
+        const { id } = params as Record<string, string>;
+        if (!id) return fail(400, "id required");
+        await store(OUTREACH_CAMPAIGNS).delete(id);
+        // Note: we leave leads/emails orphaned on purpose. A cleanup
+        // sweeper can GC them later if we want. For now the listing queries
+        // by campaign_id prefix, so orphans are invisible.
+        return ok({ id, deleted: true });
+      }
+
+      case "outreach.campaign.run": {
+        // Invokes the Apify Google Maps scraper and imports the results
+        // as leads under this campaign. Blocks on the actor run (up to
+        // 3 min); UI shows a loading state meanwhile.
+        const { id } = params as Record<string, string>;
+        if (!id) return fail(400, "id required");
+        const s = store(OUTREACH_CAMPAIGNS);
+        const campaign = await readJson<Record<string, unknown>>(s, id);
+        if (!campaign) return fail(404, "campaign not found");
+        const structured = campaign.structured_query as StructuredQuery | null;
+        if (!structured) return fail(400, "campaign has no structured_query — run preview first");
+        const apifyKey = await readServiceKey("apify");
+        if (!apifyKey) return fail(400, "Apify key not configured");
+
+        // Mark campaign as searching so the UI shows the right state.
+        await writeJson(s, id, { ...campaign, status: "searching", updated_at: new Date().toISOString() });
+
+        try {
+          const items = await runApifyGoogleMapsScraper(
+            apifyKey,
+            structured.searchTerms,
+            structured.location,
+            structured.maxResults,
+          );
+          const leadsStore = store(OUTREACH_LEADS);
+          let imported = 0;
+          for (const raw of items) {
+            const extracted = extractLeadFromApify(raw);
+            const leadId = nanoid(10);
+            const createdAt = new Date().toISOString();
+            await writeJson(leadsStore, `${id}/${createdAt}-${leadId}`, {
+              id: leadId,
+              campaign_id: id,
+              ...extracted,
+              raw,
+              status: "new", // new | drafted | sent | bounced | replied
+              is_test: false,
+              tags: [],
+              created_at: createdAt,
+            });
+            imported++;
+          }
+          const updated = {
+            ...campaign,
+            status: "ready" as const,
+            total_leads_found: items.length,
+            leads_imported: imported,
+            last_run_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          };
+          await writeJson(s, id, updated);
+          await logActivity({
+            agent_id: identity?.kind === "agent" ? identity.agent_id : null,
+            category: "research",
+            summary: `Apify scrape complete: ${imported} leads imported for "${campaign.name}"`,
+            details: { campaign_id: id, imported },
+          });
+          return ok(updated);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Scrape failed";
+          await writeJson(s, id, {
+            ...campaign,
+            status: "failed",
+            error_message: message,
+            updated_at: new Date().toISOString(),
+          });
+          return fail(500, message);
+        }
+      }
+
+      case "outreach.leads.list": {
+        const { campaign_id, limit = 500 } = params as Record<string, unknown>;
+        if (typeof campaign_id !== "string" || !campaign_id) return fail(400, "campaign_id required");
+        const rows = await listJson<{ created_at?: string }>(
+          store(OUTREACH_LEADS),
+          `${campaign_id}/`,
+        );
+        rows.sort((a, b) => ((a.created_at ?? "") < (b.created_at ?? "") ? 1 : -1));
+        return ok(rows.slice(0, typeof limit === "number" ? limit : 500));
+      }
+
+      case "outreach.leads.count": {
+        const { campaign_id } = params as Record<string, string>;
+        if (!campaign_id) return fail(400, "campaign_id required");
+        const { blobs } = await store(OUTREACH_LEADS).list({ prefix: `${campaign_id}/` });
+        return ok({ count: blobs.length });
+      }
+
+      case "outreach.leads.add_test": {
+        // Self-seed a test lead so the attendee can demo the full send-→-reply
+        // loop using their own email. Shows as 🧪 TEST in the UI.
+        const { campaign_id, name, email, notes } = params as Record<string, string>;
+        if (!campaign_id) return fail(400, "campaign_id required");
+        if (!email) return fail(400, "email required");
+        const campaign = await readJson<Record<string, unknown>>(store(OUTREACH_CAMPAIGNS), campaign_id);
+        if (!campaign) return fail(404, "campaign not found");
+        const leadId = nanoid(10);
+        const createdAt = new Date().toISOString();
+        const lead = {
+          id: leadId,
+          campaign_id,
+          name: name || email.split("@")[0],
+          email,
+          phone: null,
+          website: null,
+          address: null,
+          category: null,
+          rating: null,
+          reviews_count: null,
+          maps_url: null,
+          raw: { source: "test_lead" },
+          notes: notes ?? null,
+          status: "new",
+          is_test: true,
+          tags: ["test"],
+          created_at: createdAt,
+        };
+        await writeJson(store(OUTREACH_LEADS), `${campaign_id}/${createdAt}-${leadId}`, lead);
+        const updated = {
+          ...campaign,
+          leads_imported: (campaign.leads_imported as number ?? 0) + 1,
+          updated_at: new Date().toISOString(),
+        };
+        await writeJson(store(OUTREACH_CAMPAIGNS), campaign_id, updated);
+        await logActivity({
+          agent_id: identity?.kind === "agent" ? identity.agent_id : null,
+          category: "system",
+          summary: `Test lead added to campaign "${campaign.name}": ${email}`,
+          details: { campaign_id, lead_id: leadId },
+        });
+        return ok(lead);
+      }
+
+      case "outreach.leads.delete": {
+        const { campaign_id, lead_id } = params as Record<string, string>;
+        if (!campaign_id || !lead_id) return fail(400, "campaign_id and lead_id required");
+        const leadsStore = store(OUTREACH_LEADS);
+        const { blobs } = await leadsStore.list({ prefix: `${campaign_id}/` });
+        for (const b of blobs) {
+          const lead = await readJson<{ id: string }>(leadsStore, b.key);
+          if (lead?.id === lead_id) {
+            await leadsStore.delete(b.key);
+            return ok({ deleted: true });
+          }
+        }
+        return fail(404, "lead not found");
+      }
+
+      case "outreach.emails.generate": {
+        // Gemini drafts a per-lead email. We write one email record per
+        // lead under OUTREACH_EMAILS and bump the campaign's emails_generated.
+        const { campaign_id, sender_name, sender_company, sender_offer } = params as Record<string, string>;
+        if (!campaign_id) return fail(400, "campaign_id required");
+        const geminiKey = await readServiceKey("gemini");
+        if (!geminiKey) return fail(400, "Gemini key not configured");
+        const cs = store(OUTREACH_CAMPAIGNS);
+        const campaign = await readJson<Record<string, unknown>>(cs, campaign_id);
+        if (!campaign) return fail(404, "campaign not found");
+        const leads = await listJson<{ id: string; name: string; email: string | null; company?: string; website?: string; category?: string; address?: string; notes?: string }>(
+          store(OUTREACH_LEADS),
+          `${campaign_id}/`,
+        );
+        const sendable = leads.filter((l) => l.email);
+        if (sendable.length === 0) return fail(400, "No leads with email addresses yet");
+
+        const es = store(OUTREACH_EMAILS);
+        let generated = 0;
+        const errors: Array<{ lead_id: string; error: string }> = [];
+        for (const lead of sendable) {
+          try {
+            const draft = await generateEmailDraft(
+              geminiKey,
+              {
+                name: lead.name,
+                company: lead.company,
+                website: lead.website,
+                category: lead.category,
+                address: lead.address,
+                notes: lead.notes,
+              },
+              {
+                sender_name,
+                sender_company,
+                sender_offer,
+                campaign_query: campaign.query as string,
+              },
+            );
+            const emailId = nanoid(12);
+            const createdAt = new Date().toISOString();
+            await writeJson(es, `${campaign_id}/${createdAt}-${emailId}`, {
+              id: emailId,
+              campaign_id,
+              lead_id: lead.id,
+              to_email: lead.email,
+              to_name: lead.name,
+              subject: draft.subject,
+              body_text: draft.body_text,
+              body_html: draft.body_html,
+              status: "drafted", // drafted | sent | delivered | bounced | clicked | replied | failed
+              created_at: createdAt,
+              updated_at: createdAt,
+            });
+            generated++;
+          } catch (err) {
+            errors.push({ lead_id: lead.id, error: err instanceof Error ? err.message : "unknown" });
+          }
+        }
+
+        const updated = {
+          ...campaign,
+          emails_generated: (campaign.emails_generated as number ?? 0) + generated,
+          updated_at: new Date().toISOString(),
+        };
+        await writeJson(cs, campaign_id, updated);
+        await logActivity({
+          agent_id: identity?.kind === "agent" ? identity.agent_id : null,
+          category: "content",
+          summary: `Drafted ${generated} emails for "${campaign.name}"`,
+          details: { campaign_id, generated, errors: errors.length },
+        });
+        return ok({ generated, errors });
+      }
+
+      case "outreach.emails.list": {
+        const { campaign_id, limit = 500 } = params as Record<string, unknown>;
+        if (typeof campaign_id !== "string") return fail(400, "campaign_id required");
+        const rows = await listJson<{ created_at?: string }>(store(OUTREACH_EMAILS), `${campaign_id}/`);
+        rows.sort((a, b) => ((a.created_at ?? "") < (b.created_at ?? "") ? 1 : -1));
+        return ok(rows.slice(0, typeof limit === "number" ? limit : 500));
+      }
+
+      case "outreach.emails.update": {
+        // Lets the UI tweak a drafted email (subject/body) before send.
+        const { campaign_id, email_id, subject, body_text, body_html } = params as Record<string, string>;
+        if (!campaign_id || !email_id) return fail(400, "campaign_id and email_id required");
+        const es = store(OUTREACH_EMAILS);
+        const { blobs } = await es.list({ prefix: `${campaign_id}/` });
+        for (const b of blobs) {
+          const row = await readJson<Record<string, unknown>>(es, b.key);
+          if (row?.id === email_id) {
+            const updated = {
+              ...row,
+              ...(subject ? { subject } : {}),
+              ...(body_text ? { body_text } : {}),
+              ...(body_html ? { body_html } : {}),
+              updated_at: new Date().toISOString(),
+            };
+            await writeJson(es, b.key, updated);
+            return ok(updated);
+          }
+        }
+        return fail(404, "email not found");
+      }
+
+      case "outreach.emails.send": {
+        // Sends all drafted emails in a campaign via AgentMail. Rewrites
+        // outbound links through the /t/:token tracker first, then records
+        // AgentMail's message_id + thread_id for later webhook correlation.
+        const { campaign_id, email_ids } = params as Record<string, unknown>;
+        if (typeof campaign_id !== "string" || !campaign_id) return fail(400, "campaign_id required");
+        const agentmailKey = await readServiceKey("agentmail");
+        if (!agentmailKey) return fail(400, "AgentMail key not configured");
+        const cs = store(OUTREACH_CAMPAIGNS);
+        const campaign = await readJson<Record<string, unknown>>(cs, campaign_id);
+        if (!campaign) return fail(404, "campaign not found");
+
+        await writeJson(cs, campaign_id, { ...campaign, status: "sending", updated_at: new Date().toISOString() });
+
+        // Deployment URL lets the click-tracker links resolve back to us.
+        const baseUrl = event.headers["x-forwarded-proto"] && event.headers["x-forwarded-host"]
+          ? `${event.headers["x-forwarded-proto"]}://${event.headers["x-forwarded-host"]}`
+          : (process.env.URL ?? "");
+
+        const inbox = await getOrCreateCampaignInbox(agentmailKey, campaign.name as string);
+
+        const es = store(OUTREACH_EMAILS);
+        const allEmails = await listJson<{ id: string; campaign_id: string; lead_id: string; to_email: string; subject: string; body_text: string; body_html: string; status: string }>(
+          es,
+          `${campaign_id}/`,
+        );
+        const selectedIds = Array.isArray(email_ids) ? new Set(email_ids as string[]) : null;
+        const toSend = allEmails.filter((e) => e.status === "drafted" && (!selectedIds || selectedIds.has(e.id)));
+
+        let sent = 0;
+        const errors: Array<{ email_id: string; error: string }> = [];
+        for (const em of toSend) {
+          try {
+            const trackedHtml = rewriteLinksForTracking(em.body_html || `<p>${em.body_text || ""}</p>`, baseUrl, campaign_id, em.lead_id, em.id);
+            const r = await agentmailFetch(agentmailKey, `/inboxes/${inbox.inbox_id}/messages/send`, {
+              method: "POST",
+              body: JSON.stringify({
+                to: [em.to_email],
+                subject: em.subject,
+                text: em.body_text,
+                html: trackedHtml,
+              }),
+            });
+            if (!r.ok) {
+              const txt = await r.text();
+              errors.push({ email_id: em.id, error: `AgentMail send ${r.status}: ${txt.slice(0, 200)}` });
+              continue;
+            }
+            const resp = (await r.json()) as { message_id?: string; thread_id?: string };
+            // Re-read the email row (may have been updated), then mark as sent.
+            const { blobs } = await es.list({ prefix: `${campaign_id}/` });
+            for (const b of blobs) {
+              const row = await readJson<{ id: string }>(es, b.key);
+              if (row?.id === em.id) {
+                await writeJson(es, b.key, {
+                  ...row,
+                  status: "sent",
+                  agentmail_message_id: resp.message_id ?? null,
+                  agentmail_thread_id: resp.thread_id ?? null,
+                  agentmail_inbox_id: inbox.inbox_id,
+                  sent_at: new Date().toISOString(),
+                  updated_at: new Date().toISOString(),
+                });
+                break;
+              }
+            }
+            sent++;
+          } catch (err) {
+            errors.push({ email_id: em.id, error: err instanceof Error ? err.message : "unknown" });
+          }
+        }
+
+        const updated = {
+          ...campaign,
+          status: sent > 0 ? "completed" : "failed",
+          emails_sent: (campaign.emails_sent as number ?? 0) + sent,
+          last_send_at: new Date().toISOString(),
+          agentmail_inbox_id: inbox.inbox_id,
+          updated_at: new Date().toISOString(),
+        };
+        await writeJson(cs, campaign_id, updated);
+        await logActivity({
+          agent_id: identity?.kind === "agent" ? identity.agent_id : null,
+          category: "email",
+          summary: `Sent ${sent} of ${toSend.length} emails for "${campaign.name}"`,
+          details: { campaign_id, sent, errors: errors.length, inbox: inbox.inbox_id },
+        });
+        return ok({ sent, total: toSend.length, errors, inbox });
+      }
+
+      // ── INBOX (AgentMail inbound replies) ─────────────────────────
+      case "outreach.replies.list": {
+        const { campaign_id, limit = 200 } = params as Record<string, unknown>;
+        const s = store(OUTREACH_REPLIES);
+        const prefix = typeof campaign_id === "string" && campaign_id ? `${campaign_id}/` : undefined;
+        const rows = await listJson<{ received_at?: string }>(s, prefix);
+        rows.sort((a, b) => ((a.received_at ?? "") < (b.received_at ?? "") ? 1 : -1));
+        return ok(rows.slice(0, typeof limit === "number" ? limit : 200));
+      }
+
+      case "outreach.replies.get": {
+        const { id } = params as Record<string, string>;
+        if (!id) return fail(400, "id required");
+        const s = store(OUTREACH_REPLIES);
+        const { blobs } = await s.list();
+        for (const b of blobs) {
+          const rec = await readJson<{ id: string }>(s, b.key);
+          if (rec?.id === id) return ok(rec);
+        }
+        return fail(404, "reply not found");
+      }
+
+      case "outreach.replies.convert_to_task": {
+        // Sugar action: read a reply, create a kanban task card with the
+        // quoted body. Ties the outreach loop back to the Tasks board.
+        const { id } = params as Record<string, string>;
+        if (!id) return fail(400, "id required");
+        const s = store(OUTREACH_REPLIES);
+        const { blobs } = await s.list();
+        let reply: Record<string, unknown> | null = null;
+        for (const b of blobs) {
+          const rec = await readJson<Record<string, unknown>>(s, b.key);
+          if ((rec as { id?: string } | null)?.id === id) {
+            reply = rec;
+            break;
+          }
+        }
+        if (!reply) return fail(404, "reply not found");
+        const taskId = nanoid(10);
+        const now = new Date().toISOString();
+        const from = (reply.from as string) ?? "unknown";
+        const preview = ((reply.text as string) ?? "").slice(0, 200);
+        const task = {
+          id: taskId,
+          title: `Reply from ${from}`,
+          description: `${(reply.subject as string) ?? "(no subject)"}\n\n${preview}\n\nCampaign: ${reply.campaign_id ?? "—"}`,
+          status: "needs_input",
+          assignee_id: null,
+          priority: "medium",
+          source: "outreach_reply",
+          reply_id: id,
+          created_at: now,
+          updated_at: now,
+        };
+        await writeJson(store(TASKS), taskId, task);
+        await logActivity({
+          agent_id: identity?.kind === "agent" ? identity.agent_id : null,
+          category: "decision",
+          summary: `Reply from ${from} converted to task`,
+          details: { task_id: taskId, reply_id: id },
+        });
+        return ok(task);
+      }
+
+      // ── ANALYTICS ─────────────────────────────────────────────────
+      case "outreach.analytics.summary": {
+        // Aggregates across all campaigns + per-campaign breakdown.
+        const campaigns = await listJson<{ id: string; name: string; created_at?: string; leads_imported?: number; emails_sent?: number; emails_delivered?: number; emails_bounced?: number; emails_clicked?: number; emails_replied?: number }>(
+          store(OUTREACH_CAMPAIGNS),
+        );
+        const totals = {
+          campaigns: campaigns.length,
+          leads: 0,
+          sent: 0,
+          delivered: 0,
+          bounced: 0,
+          clicked: 0,
+          replied: 0,
+        };
+        for (const c of campaigns) {
+          totals.leads += c.leads_imported ?? 0;
+          totals.sent += c.emails_sent ?? 0;
+          totals.delivered += c.emails_delivered ?? 0;
+          totals.bounced += c.emails_bounced ?? 0;
+          totals.clicked += c.emails_clicked ?? 0;
+          totals.replied += c.emails_replied ?? 0;
+        }
+        campaigns.sort((a, b) => ((a.created_at ?? "") < (b.created_at ?? "") ? 1 : -1));
+        return ok({ totals, campaigns: campaigns.slice(0, 50) });
+      }
+
+      // ── WEBHOOK HEALTH TEST ───────────────────────────────────────
+      case "outreach.webhook.test": {
+        // The onboarding "Run test" button. Sends a closed-loop email
+        // (AgentMail inbox → same AgentMail inbox), then polls for
+        // inbound webhook events at the given webhook_id for ~15s. If
+        // any arrive, the pipe works.
+        const { webhook_id } = params as Record<string, string>;
+        if (!webhook_id) return fail(400, "webhook_id required");
+        const agentmailKey = await readServiceKey("agentmail");
+        if (!agentmailKey) return fail(400, "AgentMail key not configured");
+
+        const inbox = await getOrCreateCampaignInbox(agentmailKey, "AgentHQ Health Check");
+        const address = inbox.username && inbox.domain ? `${inbox.username}@${inbox.domain}` : null;
+        if (!address) return fail(500, "Could not resolve AgentMail inbox address");
+
+        // Snapshot existing event count so we can tell what's new.
+        const { blobs: before } = await store(WEBHOOK_EVENTS).list({ prefix: `${webhook_id}/` });
+        const beforeCount = before.length;
+
+        // Send a test email to ourselves. The webhook should fire.
+        const sendR = await agentmailFetch(agentmailKey, `/inboxes/${inbox.inbox_id}/messages/send`, {
+          method: "POST",
+          body: JSON.stringify({
+            to: [address],
+            subject: "AgentHQ webhook health check",
+            text: "This is an automated test from your AgentHQ dashboard. If you see event counters tick on the Webhooks page, your integration is wired correctly.",
+            html: "<p>This is an automated test from your AgentHQ dashboard.</p><p>If you see event counters tick on the Webhooks page, your integration is wired correctly.</p>",
+          }),
+        });
+        if (!sendR.ok) {
+          const txt = await sendR.text();
+          return fail(500, `Test send failed (${sendR.status}): ${txt.slice(0, 200)}`);
+        }
+        const sendBody = (await sendR.json()) as { message_id?: string };
+
+        // Poll for up to 15s for new events on this webhook.
+        const deadline = Date.now() + 15000;
+        let newEvents = 0;
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 1500));
+          const { blobs: after } = await store(WEBHOOK_EVENTS).list({ prefix: `${webhook_id}/` });
+          newEvents = Math.max(0, after.length - beforeCount);
+          if (newEvents > 0) break;
+        }
+
+        return ok({
+          ok: newEvents > 0,
+          test_message_id: sendBody.message_id ?? null,
+          test_address: address,
+          new_events: newEvents,
+          hint:
+            newEvents > 0
+              ? `Received ${newEvents} webhook event(s) within 15s — your integration is live.`
+              : "No events in 15s. Double-check: (a) the webhook URL is pasted into AgentMail → Settings → Webhooks, (b) all event types are enabled, (c) your AgentMail key has webhook permissions.",
+        });
+      }
+
+      // ── WEBHOOKS (extended for service tagging) ───────────────────
+      // Note: base webhook.create/list/events are defined above. We add
+      // a typed creation path here so the UI can tag a webhook as AgentMail.
+      case "webhook.create_typed": {
+        const { name, description = "", service = "generic" } = params as Record<string, string>;
+        if (!name) return fail(400, "name required");
+        const id = nanoid(12);
+        const w = {
+          id,
+          name,
+          description,
+          service, // "generic" | "agentmail"
+          event_count: 0,
+          created_at: new Date().toISOString(),
+        };
+        await writeJson(store(WEBHOOKS), id, w);
+        return ok(w);
+      }
+      case "webhook.delete": {
+        const { id } = params as Record<string, string>;
+        if (!id) return fail(400, "id required");
+        await store(WEBHOOKS).delete(id);
+        return ok({ id, deleted: true });
       }
 
       default:

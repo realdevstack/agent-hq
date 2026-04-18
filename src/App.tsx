@@ -12,6 +12,11 @@ import Voice from "@/pages/Voice";
 import VoiceInvitationBanner from "@/components/VoiceInvitationBanner";
 import Pages from "@/pages/Pages";
 import PublicForm from "@/pages/PublicForm";
+import Settings from "@/pages/Settings";
+import Outreach from "@/pages/Outreach";
+import CampaignDetail from "@/pages/CampaignDetail";
+import Inbox from "@/pages/Inbox";
+import Analytics from "@/pages/Analytics";
 
 export default function App() {
   return (
@@ -42,8 +47,13 @@ function Shell() {
           <Route path="/forms" element={<Forms />} />
           <Route path="/forms/:slug" element={<FormSubmissions />} />
           <Route path="/pages" element={<Pages />} />
+          <Route path="/outreach" element={<Outreach />} />
+          <Route path="/outreach/:id" element={<CampaignDetail />} />
+          <Route path="/inbox" element={<Inbox />} />
+          <Route path="/analytics" element={<Analytics />} />
           <Route path="/webhooks" element={<Webhooks />} />
           <Route path="/integrations" element={<Integrations />} />
+          <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
