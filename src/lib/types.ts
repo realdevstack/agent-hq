@@ -44,11 +44,13 @@ export type Activity = {
   created_at: string;
 };
 
+export type FormFieldType = "text" | "email" | "textarea" | "tel" | "url" | "number" | "date";
+
 export type FormConfig = {
   slug: string;
   title: string;
   description: string;
-  fields: Array<{ name: string; label: string; type: "text" | "email" | "textarea"; required: boolean }>;
+  fields: Array<{ name: string; label: string; type: FormFieldType; required: boolean }>;
   created_at: string;
 };
 

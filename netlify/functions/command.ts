@@ -208,11 +208,29 @@ export const handler: Handler = async (event) => {
       case "form.create": {
         const { slug, title, description = "", fields } = params as Record<string, unknown>;
         if (!slug || !title || !Array.isArray(fields)) return fail(400, "slug, title, fields required");
+        const ALLOWED_TYPES = ["text", "email", "textarea", "tel", "url", "number", "date"];
+        const normalizedFields = (fields as Array<Record<string, unknown>>).map((f, i) => {
+          const label = String(f.label ?? f.name ?? `Field ${i + 1}`);
+          const nameRaw = String(f.name ?? label);
+          const name = nameRaw
+            .toLowerCase()
+            .trim()
+            .replace(/[^a-z0-9_]+/g, "_")
+            .replace(/^_+|_+$/g, "") || `field_${i + 1}`;
+          const typeRaw = String(f.type ?? "text").toLowerCase();
+          const type = ALLOWED_TYPES.includes(typeRaw) ? typeRaw : "text";
+          return {
+            name,
+            label,
+            type,
+            required: Boolean(f.required ?? false),
+          };
+        });
         const config = {
           slug,
           title,
           description,
-          fields,
+          fields: normalizedFields,
           created_at: new Date().toISOString(),
         };
         await writeJson(store(FORMS), slug as string, config);

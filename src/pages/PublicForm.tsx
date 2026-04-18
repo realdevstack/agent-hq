@@ -59,30 +59,34 @@ export default function PublicForm() {
             <h1 className="page-title text-3xl mb-2">{config.title}</h1>
             {config.description && <p className="text-white/60 mb-6">{config.description}</p>}
             <form onSubmit={submit} className="flex flex-col gap-4">
-              {config.fields.map((f) => (
-                <div key={f.name} className="flex flex-col gap-1.5">
-                  <label className="text-xs uppercase tracking-widest text-white/50 font-display">
-                    {f.label} {f.required && <span className="text-accent">*</span>}
-                  </label>
-                  {f.type === "textarea" ? (
-                    <textarea
-                      required={f.required}
-                      rows={4}
-                      className="bg-black/30 border border-white/[0.08] rounded-lg px-3 py-2.5 text-sm text-white/90 focus:outline-none focus:border-primary/50"
-                      value={values[f.name] ?? ""}
-                      onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
-                    />
-                  ) : (
-                    <input
-                      type={f.type}
-                      required={f.required}
-                      className="bg-black/30 border border-white/[0.08] rounded-lg px-3 py-2.5 text-sm text-white/90 focus:outline-none focus:border-primary/50"
-                      value={values[f.name] ?? ""}
-                      onChange={(e) => setValues((v) => ({ ...v, [f.name]: e.target.value }))}
-                    />
-                  )}
-                </div>
-              ))}
+              {config.fields.map((f, i) => {
+                const fieldName = f.name?.trim() || `field_${i + 1}`;
+                const inputType = f.type === "textarea" ? "textarea" : f.type || "text";
+                return (
+                  <div key={fieldName} className="flex flex-col gap-1.5">
+                    <label className="text-xs uppercase tracking-widest text-white/70 font-display font-bold">
+                      {f.label} {f.required && <span className="text-accent">*</span>}
+                    </label>
+                    {inputType === "textarea" ? (
+                      <textarea
+                        required={f.required}
+                        rows={4}
+                        className="bg-black/30 border border-white/[0.08] rounded-lg px-3 py-2.5 text-sm text-white/95 font-medium focus:outline-none focus:border-primary/60 focus:shadow-glow transition"
+                        value={values[fieldName] ?? ""}
+                        onChange={(e) => setValues((v) => ({ ...v, [fieldName]: e.target.value }))}
+                      />
+                    ) : (
+                      <input
+                        type={inputType}
+                        required={f.required}
+                        className="bg-black/30 border border-white/[0.08] rounded-lg px-3 py-2.5 text-sm text-white/95 font-medium focus:outline-none focus:border-primary/60 focus:shadow-glow transition"
+                        value={values[fieldName] ?? ""}
+                        onChange={(e) => setValues((v) => ({ ...v, [fieldName]: e.target.value }))}
+                      />
+                    )}
+                  </div>
+                );
+              })}
               <button
                 type="submit"
                 disabled={loading}
