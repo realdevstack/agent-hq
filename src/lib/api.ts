@@ -21,7 +21,28 @@ export async function call<T = unknown>(
     },
     body: JSON.stringify({ action, params }),
   });
-  const json = await res.json();
-  if (!res.ok) throw new Error(json.error || `Request failed: ${res.status}`);
-  return json.data as T;
+
+  const text = await res.text();
+
+  if (!text) {
+    throw new Error(
+      `Empty response from /api/command (status ${res.status}). ` +
+        `If running locally with 'vite' only, functions are not served — ` +
+        `use your deployed site or run 'netlify dev'.`,
+    );
+  }
+
+  let parsed: { ok?: boolean; data?: unknown; error?: string };
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(
+      `Non-JSON response (status ${res.status}): ${text.slice(0, 200)}`,
+    );
+  }
+
+  if (!res.ok || parsed.ok === false) {
+    throw new Error(parsed.error || `Request failed: ${res.status}`);
+  }
+  return parsed.data as T;
 }

@@ -60,22 +60,24 @@ export const handler: Handler = async (event) => {
   // Public actions that do not require an API key.
   const PUBLIC_ACTIONS = new Set(["auth.bootstrap"]);
 
-  let req: Req;
+  // Outer try/catch — ensures the function always returns JSON, never a bare
+  // runtime error (which Netlify serves as an empty 500).
   try {
-    req = JSON.parse(event.body ?? "{}");
-  } catch {
-    return fail(400, "Invalid JSON");
-  }
-  const { action, params = {} } = req;
-  if (!action) return fail(400, "Missing 'action'");
+    let req: Req;
+    try {
+      req = JSON.parse(event.body ?? "{}");
+    } catch {
+      return fail(400, "Invalid JSON");
+    }
+    const { action, params = {} } = req;
+    if (!action) return fail(400, "Missing 'action'");
 
-  const rawKey = event.headers["x-api-key"] ?? event.headers["X-API-Key"] ?? null;
-  const identity = await identifyApiKey(typeof rawKey === "string" ? rawKey : null);
-  if (!PUBLIC_ACTIONS.has(action) && !identity) {
-    return fail(401, "Invalid or missing X-API-Key");
-  }
+    const rawKey = event.headers["x-api-key"] ?? event.headers["X-API-Key"] ?? null;
+    const identity = await identifyApiKey(typeof rawKey === "string" ? rawKey : null);
+    if (!PUBLIC_ACTIONS.has(action) && !identity) {
+      return fail(401, "Invalid or missing X-API-Key");
+    }
 
-  try {
     switch (action) {
       // ── AUTH ──────────────────────────────────────────────
       case "auth.bootstrap": {
@@ -236,6 +238,8 @@ export const handler: Handler = async (event) => {
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
+    const stack = err instanceof Error ? err.stack : undefined;
+    console.error("[command] handler error:", message, stack);
     return fail(500, message);
   }
 };
