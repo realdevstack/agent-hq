@@ -30,6 +30,7 @@ const FORMS = "agent-hq-forms";
 const SUBMISSIONS = "agent-hq-submissions";
 const WEBHOOKS = "agent-hq-webhooks";
 const WEBHOOK_EVENTS = "agent-hq-webhook-events";
+const VOICE_CONFIG = "agent-hq-voice-config";
 
 // Write activity log row — fire and forget.
 async function logActivity(entry: {
@@ -242,6 +243,36 @@ export const handler: Handler = async (event) => {
         const { id } = params as Record<string, string>;
         if (!id) return fail(400, "id required");
         return ok(await listJson(store(WEBHOOK_EVENTS), `${id}/`));
+      }
+
+      // ── VOICE CONFIG ──────────────────────────────────────────────
+      case "voice.config.check": {
+        const cfg = await readJson<{ gemini_key?: string }>(store(VOICE_CONFIG), "config");
+        return ok({ configured: !!cfg?.gemini_key });
+      }
+      case "voice.config.get": {
+        // Requires master-key auth so the Gemini key can reach the browser
+        // WebRTC client that needs it to speak directly to Gemini Live.
+        if (identity?.kind !== "master") {
+          return fail(403, "voice.config.get requires the master API key");
+        }
+        const cfg = await readJson<{ gemini_key?: string }>(store(VOICE_CONFIG), "config");
+        if (!cfg?.gemini_key) return fail(404, "No Gemini key stored yet");
+        return ok({ gemini_key: cfg.gemini_key });
+      }
+      case "voice.config.set": {
+        const { gemini_key } = params as Record<string, string>;
+        if (!gemini_key || !gemini_key.trim()) return fail(400, "gemini_key required");
+        await writeJson(store(VOICE_CONFIG), "config", {
+          gemini_key: gemini_key.trim(),
+          updated_at: new Date().toISOString(),
+        });
+        await logActivity({ agent_id: null, category: "system", summary: "Voice: Gemini key configured" });
+        return ok({ configured: true });
+      }
+      case "voice.config.clear": {
+        await store(VOICE_CONFIG).delete("config");
+        return ok({ cleared: true });
       }
 
       default:

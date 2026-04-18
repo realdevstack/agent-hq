@@ -7,6 +7,7 @@ import {
   Inbox,
   Webhook,
   Code2,
+  Mic,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -15,6 +16,7 @@ const NAV = [
   { to: "/tasks", label: "Tasks", icon: KanbanSquare },
   { to: "/activity", label: "Activity", icon: ActivityIcon },
   { to: "/agents", label: "Agents", icon: Users },
+  { to: "/voice", label: "Voice", icon: Mic },
   { to: "/forms", label: "Forms", icon: Inbox },
   { to: "/webhooks", label: "Webhooks", icon: Webhook },
   { to: "/integrations", label: "Integrations", icon: Code2 },

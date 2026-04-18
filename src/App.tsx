@@ -8,6 +8,7 @@ import Forms from "@/pages/Forms";
 import FormSubmissions from "@/pages/FormSubmissions";
 import Webhooks from "@/pages/Webhooks";
 import Integrations from "@/pages/Integrations";
+import Voice from "@/pages/Voice";
 import PublicForm from "@/pages/PublicForm";
 
 export default function App() {
@@ -34,6 +35,7 @@ function Shell() {
           <Route path="/tasks" element={<Tasks />} />
           <Route path="/activity" element={<Activity />} />
           <Route path="/agents" element={<Agents />} />
+          <Route path="/voice" element={<Voice />} />
           <Route path="/forms" element={<Forms />} />
           <Route path="/forms/:slug" element={<FormSubmissions />} />
           <Route path="/webhooks" element={<Webhooks />} />
