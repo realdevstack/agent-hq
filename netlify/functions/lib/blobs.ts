@@ -3,15 +3,6 @@ import { getStore } from "@netlify/blobs";
 export type Store = ReturnType<typeof getStore>;
 
 export function store(name: string): Store {
-  // Try auto-config first (works when BLOBS_CONTEXT env var is present).
-  // Fall back to explicit siteID + token from the runtime env — needed on
-  // sites where Netlify isn't injecting BLOBS_CONTEXT for functions.
-  const siteID = process.env.SITE_ID;
-  const token =
-    process.env.NETLIFY_FUNCTIONS_TOKEN ?? process.env.NETLIFY_BLOBS_TOKEN;
-  if (!process.env.BLOBS_CONTEXT && siteID && token) {
-    return getStore({ name, siteID, token, consistency: "strong" });
-  }
   return getStore({ name, consistency: "strong" });
 }
 

@@ -58,7 +58,7 @@ export const handler: Handler = async (event) => {
   if (event.httpMethod !== "POST") return fail(405, "Method not allowed");
 
   // Public actions that do not require an API key.
-  const PUBLIC_ACTIONS = new Set(["auth.bootstrap", "debug.env"]);
+  const PUBLIC_ACTIONS = new Set(["auth.bootstrap"]);
 
   // Outer try/catch — ensures the function always returns JSON, never a bare
   // runtime error (which Netlify serves as an empty 500).
@@ -85,21 +85,6 @@ export const handler: Handler = async (event) => {
         // OR if no key has been issued yet (first visit from the owner).
         const apiKey = await getOrCreateApiKey();
         return ok({ api_key: apiKey });
-      }
-      case "debug.env": {
-        const keys = Object.keys(process.env).filter((k) =>
-          /NETLIFY|BLOBS|SITE|DEPLOY|URL|CONTEXT/i.test(k),
-        );
-        return ok({
-          available_env_keys: keys,
-          NETLIFY: process.env.NETLIFY,
-          CONTEXT: process.env.CONTEXT,
-          SITE_ID: process.env.SITE_ID ? "(set)" : "(unset)",
-          NETLIFY_SITE_ID: process.env.NETLIFY_SITE_ID ? "(set)" : "(unset)",
-          BLOBS_CONTEXT: process.env.BLOBS_CONTEXT ? "(set)" : "(unset)",
-          NETLIFY_BLOBS_CONTEXT: process.env.NETLIFY_BLOBS_CONTEXT ? "(set)" : "(unset)",
-          URL: process.env.URL,
-        });
       }
 
       // ── AGENTS ──────────────────────────────────────────────
