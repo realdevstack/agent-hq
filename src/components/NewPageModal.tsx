@@ -9,32 +9,37 @@ type Props = {
   onCreated: (page: Page) => void;
 };
 
-const DEFAULT_HTML = `<section class="hero">
-  <span class="eyebrow">Your Brand</span>
-  <h1>A headline that stops the scroll.</h1>
-  <p>One or two sentences that make the value unmistakable.</p>
-  <div class="cta-row">
-    <a href="#contact" class="button">Get in touch</a>
-    <a href="#features" class="button ghost">Learn more</a>
-  </div>
-</section>
+const DEFAULT_HTML = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Your Page Title</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>body{font-family:Inter,sans-serif} .serif{font-family:'Instrument Serif',serif}</style>
+</head>
+<body class="bg-neutral-950 text-neutral-100 antialiased">
+  <section class="min-h-screen flex items-center px-6 md:px-12 relative overflow-hidden">
+    <div class="absolute inset-0 bg-gradient-to-br from-indigo-500/15 via-transparent to-transparent"></div>
+    <div class="relative max-w-5xl mx-auto w-full">
+      <span class="inline-block text-xs tracking-[0.3em] uppercase text-indigo-400 font-semibold mb-6">Your Brand</span>
+      <h1 class="serif text-5xl md:text-7xl lg:text-8xl leading-[0.95] mb-6">Headline that<br/>stops the scroll.</h1>
+      <p class="text-lg md:text-xl text-neutral-400 max-w-xl mb-10 leading-relaxed">One or two sentences that make the value unmistakable.</p>
+      <div class="flex flex-wrap gap-3">
+        <a href="#contact" class="inline-flex items-center gap-2 bg-indigo-500 hover:bg-indigo-400 text-black font-semibold px-6 py-3 rounded-full transition">Get in touch →</a>
+        <a href="#learn-more" class="inline-flex items-center gap-2 border border-neutral-700 hover:border-neutral-500 px-6 py-3 rounded-full transition">Learn more</a>
+      </div>
+    </div>
+  </section>
 
-<section id="features" class="features">
-  <div class="card">
-    <h3>Feature one</h3>
-    <p>Why it matters.</p>
-  </div>
-  <div class="card">
-    <h3>Feature two</h3>
-    <p>How it helps.</p>
-  </div>
-  <div class="card">
-    <h3>Feature three</h3>
-    <p>The proof point.</p>
-  </div>
-</section>
-
-{{form:contact}}
+  <section id="contact" class="px-6 md:px-12 py-24">
+    <div class="max-w-xl mx-auto">
+      {{form:contact}}
+    </div>
+  </section>
+</body>
+</html>
 `;
 
 export default function NewPageModal({ open, onClose, onCreated }: Props) {
@@ -86,7 +91,7 @@ export default function NewPageModal({ open, onClose, onCreated }: Props) {
         onClose();
       }}
       title="Create Landing Page"
-      description="Paste HTML for the body — the theme wraps it with typography, layout, and glow. Use {{form:slug}} to embed a form inline."
+      description="Paste a full HTML document (with <!doctype html>) and it's served verbatim — bring Tailwind, bring your own fonts, bring whatever you want. Or paste a body fragment and the dark-futuristic theme wraps it. Embed a form anywhere with {{form:slug}}."
       maxWidth="max-w-3xl"
     >
       <form onSubmit={submit} className="flex flex-col">
@@ -134,10 +139,10 @@ export default function NewPageModal({ open, onClose, onCreated }: Props) {
         <FormField
           label="HTML Body"
           required
-          hint="Use class names: .hero, .features, .card, .button, .stat, .eyebrow, .cta-row, footer"
+          hint="Full document (<!doctype html>...) served verbatim — OR just a body fragment wrapped in the theme (class names: .hero, .features, .card, .button, .stat, .eyebrow, .cta-row, footer)."
         >
           <TextArea
-            rows={12}
+            rows={14}
             value={htmlBody}
             onChange={(e) => setHtmlBody(e.target.value)}
             className="font-mono text-xs"

@@ -1,15 +1,16 @@
 # mission-control-landing-page
 
-**Trigger:** "build me a landing page for …" or "create a page with …" or "ship a page …"
+**Trigger:** "build me a landing page for …" or "create a page with …" or
+"ship a page …" or "design a page for …"
 
-**What it does:** Generates a complete, professional-looking landing page on the
-user's AgentHQ deployment — with an optional contact form embedded inline — and
-returns a live URL in under 30 seconds. The AgentHQ theme wrapper handles
-typography, layout, glow, and dark-mode aesthetics automatically. You write the
-semantic HTML body; the theme makes it beautiful.
+**What it does:** Generates a complete, professional-looking landing page on
+the user's AgentHQ deployment — with an optional contact form embedded
+inline — and returns a live URL in under 30 seconds. **You write a full,
+modern HTML document** with your own styling (Tailwind CDN, inline CSS,
+whatever produces the best result). AgentHQ serves it verbatim.
 
-**Replaces:** Webflow ($14-39/mo), Carrd ($19/yr), Framer ($15-30/mo), a
-freelance landing-page designer ($500-$5,000 one-time).
+**Replaces:** Webflow ($14-39/mo), Carrd ($19/yr), Framer ($15-30/mo), and
+freelance landing-page designers ($500-$5,000 one-time).
 
 ---
 
@@ -24,29 +25,56 @@ AGENT_HQ_KEY=<your master or agent api_key>
 
 ---
 
-## Execution steps
+## Two modes — pick full-HTML for anything real
 
-### STEP 1 — Listen carefully to the brief
+### Full-HTML mode (default, recommended)
+
+Write a complete HTML document starting with `<!doctype html>` or `<html>`.
+AgentHQ serves it as-is. You own the layout, typography, color, motion,
+everything. Use Tailwind CDN or any CSS framework you want. This is how
+you produce a landing page that looks like a real brand site.
+
+```html
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Your Page Title</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="...">
+  <!-- your full page -->
+</body>
+</html>
+```
+
+### Themed mode (for simple drafts)
+
+Write just a fragment of body HTML and AgentHQ wraps it in a dark-futuristic
+theme. Use this only for quick drafts or when you explicitly want the default
+theme. **Most of the time, use full-HTML mode.**
+
+---
+
+## The full-HTML workflow
+
+### STEP 1 — Understand the brief
 
 Before you write any HTML, identify:
 
-- **Who the page is for** (business owner? freelancer? AI agency? photographer?
-  student portfolio?)
-- **What the page should do** (capture leads? showcase work? explain a service?
-  sell a product?)
-- **Does the user want a contact form?** If yes, plan to create it first.
-- **What tone / vibe?** (minimal, bold, futuristic, editorial, playful)
+- **Who the page is for** (business owner, freelancer, AI agency, photographer, student portfolio, SaaS company)
+- **What the page should do** (capture leads? showcase work? explain a service? sell a product?)
+- **Does the user want a contact form?**
+- **Brand color / tone** — minimal, bold, futuristic, editorial, playful
 
-If any of these are unclear, ASK the user before you build. One clarifying
-question is worth ten regenerations.
+If unclear, ask one clarifying question before building. Cheaper than
+regenerating.
 
-### STEP 2 — (Optional) Create the contact form first
+### STEP 2 — (If needed) Create the contact form first
 
-If the page needs a contact form, chain `form.create` before the page. This is
-what makes this skill magical — one prompt produces a working lead capture.
-
-Choose a form slug that matches the page (e.g. `portfolio-inquiry` for
-`portfolio-jane-smith`).
+Chain `form.create` **before** the page so you can embed it. Match the
+form slug to the page (e.g. `lumina-inquiry` for `lumina-studio`).
 
 ```bash
 curl -X POST $AGENT_HQ_URL/api/command \
@@ -55,9 +83,9 @@ curl -X POST $AGENT_HQ_URL/api/command \
   -d '{
     "action":"form.create",
     "params":{
-      "slug":"portfolio-inquiry",
-      "title":"Let\"'"'"'"s talk",
-      "description":"Drop your project details and I\"'"'"'"ll get back within 24 hours.",
+      "slug":"lumina-inquiry",
+      "title":"Let'"'"'s create something",
+      "description":"Tell me about your project.",
       "fields":[
         {"name":"name","label":"Your Name","type":"text","required":true},
         {"name":"email","label":"Email","type":"email","required":true},
@@ -67,85 +95,105 @@ curl -X POST $AGENT_HQ_URL/api/command \
   }'
 ```
 
-**CRITICAL field shape:** each field needs ALL four keys — `name` (lowercase
-slug), `label` (human readable), `type` (text / email / textarea / tel / url /
-number / date), and `required` (boolean).
+**CRITICAL field shape:** every field needs all four keys — `name`
+(lowercase slug), `label` (human readable), `type` (text / email /
+textarea / tel / url / number / date), `required` (boolean).
 
-### STEP 3 — Write the HTML body
+### STEP 3 — Write the full HTML
 
-You're writing the content INSIDE `<main class="ahq-page">`. The theme wrapper
-supplies `<html>`, `<head>`, fonts, CSS, and dark futuristic styling. Do NOT
-write `<!doctype>`, `<html>`, `<head>`, `<body>`, or inline `<style>` tags.
-Your HTML is just the semantic body.
-
-**Class conventions that the theme styles automatically:**
-
-| Element | Class | What it gives you |
-|---|---|---|
-| Hero section | `<section class="hero">` | Comfortable top padding, left-aligned by default |
-| Eyebrow tag | `<span class="eyebrow">BRAND</span>` | Uppercase pill with accent glow |
-| Headline | `<h1>` | Huge Orbitron with accent-gradient text |
-| Subhead | `<p>` after h1 | Muted Rajdhani, readable line length |
-| Features grid | `<section class="features">` wrapping `<div class="card">` children | Auto-responsive grid |
-| Glass card | `<div class="card">` | Blurred glass with hover glow |
-| Big stat | `<div class="stat">93%</div>` | Oversized gradient number |
-| CTA row | `<div class="cta-row">` | Horizontal buttons row |
-| Button primary | `<a class="button">` | Solid accent with glow |
-| Button ghost | `<a class="button ghost">` | Transparent outline |
-| Footer | `<footer>` or `<div class="footer">` | Top border + dim text |
-
-**Structure a landing page in roughly this shape:**
+Produce a complete modern landing page. Target a specific feel — don't
+default to generic SaaS. Use Tailwind CDN for fast, beautiful output:
 
 ```html
-<section class="hero">
-  <span class="eyebrow">Eyebrow or brand name</span>
-  <h1>Headline that stops the scroll.</h1>
-  <p>One-sentence value prop that makes the headline unmistakable.</p>
-  <div class="cta-row">
-    <a href="#contact" class="button">Primary CTA</a>
-    <a href="#features" class="button ghost">Secondary</a>
-  </div>
-</section>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lumina Studio — Photography</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+    .serif { font-family: 'Instrument Serif', serif; }
+  </style>
+</head>
+<body class="bg-neutral-950 text-neutral-100 antialiased">
 
-<section id="features" class="features">
-  <div class="card">
-    <h3>Benefit one</h3>
-    <p>Why it matters in a sentence.</p>
-  </div>
-  <div class="card">
-    <h3>Benefit two</h3>
-    <p>The proof point.</p>
-  </div>
-  <div class="card">
-    <h3>Benefit three</h3>
-    <p>The differentiator.</p>
-  </div>
-</section>
-
-<section>
-  <h2>Proof / results / testimonials</h2>
-  <div class="features">
-    <div class="card">
-      <div class="stat">93%</div>
-      <p>Outcome stat with source.</p>
+  <!-- Hero -->
+  <section class="min-h-screen flex items-center px-6 md:px-12 relative overflow-hidden">
+    <div class="absolute inset-0 bg-gradient-to-br from-orange-500/10 via-transparent to-transparent"></div>
+    <div class="relative max-w-5xl mx-auto w-full">
+      <span class="inline-block text-xs tracking-[0.3em] uppercase text-orange-400 font-semibold mb-6">Lumina Studio</span>
+      <h1 class="serif text-5xl md:text-7xl lg:text-8xl leading-[0.95] mb-6">
+        Light, written<br/>on film.
+      </h1>
+      <p class="text-lg md:text-xl text-neutral-400 max-w-xl mb-10 leading-relaxed">
+        Wedding and editorial photography in a style that outlasts trends.
+        Documentary soul, editorial polish.
+      </p>
+      <div class="flex flex-wrap gap-3">
+        <a href="#contact" class="inline-flex items-center gap-2 bg-orange-500 hover:bg-orange-400 text-black font-semibold px-6 py-3 rounded-full transition">
+          Start a project →
+        </a>
+        <a href="#work" class="inline-flex items-center gap-2 border border-neutral-700 hover:border-neutral-500 text-neutral-100 px-6 py-3 rounded-full transition">
+          See work
+        </a>
+      </div>
     </div>
-    <div class="card">
-      <p>"Short testimonial quote that lands."</p>
-      <p><strong>— Name, Title</strong></p>
+  </section>
+
+  <!-- Work/features grid -->
+  <section id="work" class="px-6 md:px-12 py-24">
+    <div class="max-w-5xl mx-auto">
+      <h2 class="serif text-4xl md:text-5xl mb-16">What I shoot.</h2>
+      <div class="grid md:grid-cols-3 gap-6">
+        <div class="bg-neutral-900/50 backdrop-blur border border-neutral-800 rounded-2xl p-8 hover:border-orange-500/30 transition">
+          <div class="text-orange-400 text-sm font-semibold tracking-widest uppercase mb-3">01</div>
+          <h3 class="serif text-2xl mb-3">Weddings</h3>
+          <p class="text-neutral-400 leading-relaxed">Full-day documentary coverage with a two-shooter option.</p>
+        </div>
+        <div class="bg-neutral-900/50 backdrop-blur border border-neutral-800 rounded-2xl p-8 hover:border-orange-500/30 transition">
+          <div class="text-orange-400 text-sm font-semibold tracking-widest uppercase mb-3">02</div>
+          <h3 class="serif text-2xl mb-3">Editorial</h3>
+          <p class="text-neutral-400 leading-relaxed">Brand shoots, lookbooks, magazine commissions.</p>
+        </div>
+        <div class="bg-neutral-900/50 backdrop-blur border border-neutral-800 rounded-2xl p-8 hover:border-orange-500/30 transition">
+          <div class="text-orange-400 text-sm font-semibold tracking-widest uppercase mb-3">03</div>
+          <h3 class="serif text-2xl mb-3">Portraits</h3>
+          <p class="text-neutral-400 leading-relaxed">Clean, timeless headshots for founders and executives.</p>
+        </div>
+      </div>
     </div>
-  </div>
-</section>
+  </section>
 
-{{form:portfolio-inquiry}}
+  <!-- Contact form -->
+  <section id="contact" class="px-6 md:px-12 py-24">
+    <div class="max-w-xl mx-auto">
+      {{form:lumina-inquiry}}
+    </div>
+  </section>
 
-<footer>
-  <p>© Your Name — Built in 30 seconds on AgentHQ.</p>
-</footer>
+  <footer class="px-6 md:px-12 py-12 border-t border-neutral-900 text-sm text-neutral-500">
+    © Lumina Studio · Built on AgentHQ
+  </footer>
+
+</body>
+</html>
 ```
 
-**The `{{form:slug}}` marker** — this is how you embed a form inline. The
-theme server replaces it with a styled form that POSTs to
-`/api/form/<slug>`. No JavaScript required from you. Just the marker.
+**Key patterns in good landing pages:**
+
+1. **Hero takes up viewport height** (`min-h-screen`) — no tiny hero jammed at the top
+2. **Typography mix** — a serif or display font for headings, a clean sans-serif for body
+3. **Huge headlines** — 5-8rem on hero, 3-4rem on section H2s. Don't be shy.
+4. **Space** — generous padding (`px-6 md:px-12`, `py-24`). Whitespace is luxury.
+5. **Subtle gradients** — overlay gradients on the hero, border-tinted glow on cards
+6. **Responsive breakpoints** — `md:` prefixes for anything above mobile
+7. **Constrained max-width** — `max-w-5xl mx-auto` or similar. Never full-bleed text.
+8. **CTA pair** — primary solid button + secondary outlined. Not three. Not one.
+9. **Numbered features** — "01, 02, 03" eyebrows in accent color feels editorial
+10. **Hover states** — borders, not just color changes
 
 ### STEP 4 — Publish the page
 
@@ -156,53 +204,34 @@ curl -X POST $AGENT_HQ_URL/api/command \
   -d '{
     "action":"page.create",
     "params":{
-      "slug":"portfolio-jane-smith",
-      "title":"Jane Smith — Product Design",
-      "linked_form_slug":"portfolio-inquiry",
-      "accent":"#00BFFF",
-      "html_body":"<section class=\"hero\">...your HTML here...</section>"
+      "slug":"lumina-studio",
+      "title":"Lumina Studio — Photography",
+      "linked_form_slug":"lumina-inquiry",
+      "html_body":"<!doctype html><html lang=\"en\">...full HTML here...</html>"
     }
   }'
 ```
 
-**Parameters:**
+**JSON escaping:** your HTML goes in `html_body` as a JSON string. Escape
+`"` as `\"` and newlines as `\n` (or just use a templating language /
+`JSON.stringify` in whatever runtime you're in).
 
-- `slug` — lowercase, dashes only. Becomes the URL path at `/p/<slug>`.
-- `title` — appears in the browser tab.
-- `html_body` — your semantic HTML. Escape quotes and newlines if sending via
-  JSON. Long HTML is fine.
-- `linked_form_slug` *(optional)* — if set, the embedded form posts to this
-  form's endpoint. Usually matches a form you created in STEP 2.
-- `accent` *(optional)* — hex color for headings, buttons, and glow. Default
-  `#00BFFF`. Match the user's brand if they gave you one.
-
-### STEP 5 — Return the live URL
-
-The response includes `created_at` and the normalized slug. Construct the URL
-and tell the user:
+### STEP 5 — Return the live URL + log the activity
 
 ```
 Your page is live at:
-https://<their-site>.netlify.app/p/<slug>
+<AGENT_HQ_URL>/p/<slug>
 
-Contact form submissions will appear in your Forms tab and trigger activity
-log entries. Open the page in a new tab to see it.
+Form submissions land in the Forms tab and trigger activity log entries.
 ```
 
-Log the activity so the dashboard shows what you did:
+Also log what you did:
 
 ```bash
 curl -X POST $AGENT_HQ_URL/api/command \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $AGENT_HQ_KEY" \
-  -d '{
-    "action":"activity.log",
-    "params":{
-      "category":"content",
-      "summary":"Published landing page: <title>",
-      "details":{"slug":"<slug>","url":"<full url>"}
-    }
-  }'
+  -d '{"action":"activity.log","params":{"category":"content","summary":"Published landing page: <title>","details":{"slug":"<slug>","url":"<full url>"}}}'
 ```
 
 ---
@@ -210,24 +239,21 @@ curl -X POST $AGENT_HQ_URL/api/command \
 ## Iteration — when the user wants changes
 
 **CRITICAL:** if the user asks to change an existing page, you MUST call
-`page.update` with the same slug. Do NOT re-create the page with
-`page.create` — that works but wastes a step. Do NOT just tell the user
-you edited it without actually calling the API — verify the response comes
-back `{"ok": true}` before claiming success.
+`page.update` with the same slug. Do NOT re-create with `page.create`. Do
+NOT just tell the user you edited it — verify the response is
+`{"ok": true}` before claiming success.
 
-Every successful `page.update` is logged to the activity feed so the human
-operator can verify you actually did the work. If they don't see an
-activity entry, you didn't do it.
+Every successful `page.update` writes an activity-feed entry so the
+operator can verify. If no entry appears, you didn't do it.
 
-Treat the first page as a draft. The user will say things like:
+User prompts that trigger updates:
 
-- *"Make the headline more aggressive."*
-- *"Add a testimonials section with three quotes."*
-- *"Change the accent to orange."*
-- *"Remove the features grid, replace with a pricing table."*
+- *"Make the hero darker"* / *"Change the accent to orange"*
+- *"Add a testimonials section"*
+- *"Remove the features grid, add a pricing table"*
+- *"Rewrite the headline — punchier"*
 
-To iterate: regenerate the full HTML body with the requested change, then call
-`page.update` with the same slug. The page is replaced at the same URL.
+Regenerate the full HTML with the change, then:
 
 ```bash
 curl -X POST $AGENT_HQ_URL/api/command \
@@ -236,249 +262,110 @@ curl -X POST $AGENT_HQ_URL/api/command \
   -d '{
     "action":"page.update",
     "params":{
-      "slug":"portfolio-jane-smith",
-      "html_body":"<section class=\"hero\">...new HTML...</section>",
-      "accent":"#FF6B35"
-    }
-  }'
-```
-
-Same URL, updated content. The user refreshes — they see the new version.
-
----
-
-## Design vocabulary — the look that makes people screenshot
-
-The theme wrapper ships a **dark-futuristic glassmorphic** design system. You
-don't import fonts, write CSS, or design anything. You write HTML that uses
-the vocabulary below, and the output looks like a $5K brand site.
-
-### Glassmorphism (already on every `.card`)
-
-Every element with class `.card` gets:
-
-- Semi-transparent background (`rgba(255,255,255,0.02)`)
-- 20px backdrop blur so the radial-gradient background bleeds through
-- 1px border at 8% white
-- Inset top highlight (1px line of subtle light)
-- 16px rounded corners
-
-Stack cards in a `.features` grid, overlap them on a hero, or use single
-large cards for pull-quotes and proof sections — the glass effect reads
-beautifully at any size.
-
-### Glow (reserved for what matters)
-
-Three glow patterns ship in the theme:
-
-- **Button glow** — `.button` has a permanent accent-color glow. Use it for
-  the primary CTA. Never put glow on more than one button per section.
-- **Card hover glow** — `.card:hover` lifts 2px and gains a 24px accent
-  glow. Automatic. Don't add your own.
-- **Accent pill** — `.eyebrow` is a pill with inset accent-soft background
-  and an accent-tinted border. Use it once above an `<h1>`.
-
-If you want a **custom glow** on a one-off element, inline a style:
-
-```html
-<div class="card" style="box-shadow: 0 0 48px rgba(168,85,247,0.25);">
-  <h3>One-off glow</h3>
-  <p>Use sparingly. Glow is a punctuation mark, not a font.</p>
-</div>
-```
-
-### Hover animations (baked in)
-
-- `.card:hover` — `transform: translateY(-2px)` + border brightens + accent glow appears
-- `.button:hover` — lift 1px + glow intensifies
-- `a:hover` — underline reveal
-
-Do not add more hover animations. Consistency is what makes it feel
-premium; every hover behaving the same is intentional.
-
-### Motion (optional inline additions)
-
-For hero elements you want to animate in, add inline keyframes:
-
-```html
-<style>
-  .hero-fade { opacity: 0; animation: fade-up 800ms ease-out forwards; }
-  @keyframes fade-up {
-    from { opacity: 0; transform: translateY(16px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
-</style>
-<section class="hero hero-fade">
-  <span class="eyebrow">Brand</span>
-  <h1>Your headline.</h1>
-</section>
-```
-
-**Rule:** animate at most one element per scroll. Too much motion on a
-landing page feels cheap.
-
-### Gradient headline accents (optional)
-
-`<h1>` already has a gradient from white to the accent color — baked in.
-
-For secondary headings that need to pop, use this inline:
-
-```html
-<h2 style="background: linear-gradient(135deg, var(--ahq-accent), var(--ahq-purple)); -webkit-background-clip: text; background-clip: text; color: transparent;">
-  Secondary headline that glows
-</h2>
-```
-
-### Large stat blocks (high-conversion copy)
-
-The `.stat` class renders an oversized gradient number (3-5rem).
-
-```html
-<div class="card">
-  <div class="stat">93%</div>
-  <p>Of our clients renew annually. Source: internal 2025.</p>
-</div>
-```
-
-Use for proof. One `.stat` per section. Never more than three on a page.
-
-### Typography stack (already loaded)
-
-- **Orbitron** (headings) — geometric, futuristic, 700-900 weight
-- **Rajdhani** (body) — condensed sans-serif, 500 weight default
-- **JetBrains Mono** (code) — auto-applied to `<code>` and `<pre>`
-
-You don't declare any of these. Just use the semantic tag.
-
----
-
-## Integration chain — the two-call pattern
-
-This is the core pattern every landing page uses. Memorize it.
-
-### STEP A — Create the form (if the page has a contact form)
-
-```bash
-curl -X POST $AGENT_HQ_URL/api/command \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: $AGENT_HQ_KEY" \
-  -d '{
-    "action":"form.create",
-    "params":{
-      "slug":"<form-slug>",
-      "title":"<form title shown above the fields>",
-      "description":"<one line under the title>",
-      "fields":[
-        {"name":"<slug>","label":"<Label>","type":"<type>","required":<bool>}
-      ]
-    }
-  }'
-```
-
-### STEP B — Create the page (embedding the form with the marker)
-
-```bash
-curl -X POST $AGENT_HQ_URL/api/command \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: $AGENT_HQ_KEY" \
-  -d '{
-    "action":"page.create",
-    "params":{
-      "slug":"<page-slug>",
-      "title":"<browser tab title>",
-      "linked_form_slug":"<same form-slug as step A>",
-      "accent":"#<hex>",
-      "html_body":"<your semantic HTML with {{form:form-slug}} where you want the form>"
-    }
-  }'
-```
-
-The response includes the page record. The live URL is:
-
-```
-<AGENT_HQ_URL>/p/<page-slug>
-```
-
-That's the entire integration. Two POSTs. One URL out.
-
----
-
-## Design principles — don't ship ugly
-
-The theme is already beautiful. Your job is to not get in its way.
-
-1. **Short headlines.** 3-7 words max in `<h1>`. Anything longer breaks on
-   mobile.
-2. **One idea per section.** Don't stack three heroes. Use `<h2>` to break into
-   new sections.
-3. **Cards in threes.** Features grid looks cleanest with 3 or 6 cards. Two
-   cards look lonely. Four cards wrap oddly on medium screens.
-4. **Forms near the bottom.** Put `{{form:slug}}` after proof/benefits, not
-   before. Capture once they're convinced.
-5. **One `<h1>` per page.** Multiple H1s hurt SEO and visual hierarchy.
-6. **Accent color = brand color.** Ask. Default to `#00BFFF`.
-7. **No emojis in `<h1>`.** They look great in eyebrows, buttons, and body
-   copy; they look childish in the main headline.
-8. **Don't invent classes.** Stick to the ones the theme styles. Custom classes
-   won't break the page but they won't look like the rest of it either.
-
----
-
-## Example — full end-to-end flow
-
-**User prompt:** *"Build me a landing page for my freelance photography
-business. I shoot weddings and editorial work. I want a contact form that asks
-what kind of shoot they're planning."*
-
-**Step 1** — Clarify: *"Quick check — what's the business name and do you have
-a brand color preference?"*
-
-**User:** *"Lumina Studio. Deep orange, maybe around #FF6B35."*
-
-**Step 2** — Create form:
-
-```bash
-curl -X POST $AGENT_HQ_URL/api/command -H "X-API-Key: $AGENT_HQ_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"action":"form.create","params":{"slug":"lumina-inquiry","title":"Let'"'"'s create","description":"Tell me about your shoot.","fields":[{"name":"name","label":"Your Name","type":"text","required":true},{"name":"email","label":"Email","type":"email","required":true},{"name":"shoot_type","label":"What kind of shoot?","type":"text","required":true},{"name":"date","label":"Approximate date","type":"date","required":false},{"name":"details","label":"Tell me more","type":"textarea","required":false}]}}'
-```
-
-**Step 3+4** — Write and publish:
-
-```bash
-curl -X POST $AGENT_HQ_URL/api/command -H "X-API-Key: $AGENT_HQ_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "action":"page.create",
-    "params":{
       "slug":"lumina-studio",
-      "title":"Lumina Studio — Photography",
-      "linked_form_slug":"lumina-inquiry",
-      "accent":"#FF6B35",
-      "html_body":"<section class=\"hero\"><span class=\"eyebrow\">Lumina Studio</span><h1>Light, written on film.</h1><p>Wedding and editorial photography in a style that lasts longer than a trend.</p><div class=\"cta-row\"><a href=\"#contact\" class=\"button\">Start a project</a><a href=\"#work\" class=\"button ghost\">See work</a></div></section><section id=\"work\" class=\"features\"><div class=\"card\"><h3>Weddings</h3><p>Full-day documentary coverage with a two-shooter option.</p></div><div class=\"card\"><h3>Editorial</h3><p>Brand shoots, lookbooks, magazine commissions.</p></div><div class=\"card\"><h3>Portraits</h3><p>Clean, timeless headshots for founders and executives.</p></div></section>{{form:lumina-inquiry}}<footer><p>© Lumina Studio</p></footer>"
+      "html_body":"<!doctype html>...updated HTML..."
     }
   }'
 ```
 
-**Step 5** — Reply to user:
+Same URL, updated content. User refreshes — new version.
 
-> Done. Lumina Studio is live:
-> **https://your-site.netlify.app/p/lumina-studio**
->
-> Contact form submissions land in your AgentHQ Forms tab under
-> `lumina-inquiry`. Tell me if you want the hero darker, more work examples, or
-> a pricing section — I can update it in place.
+---
+
+## Form embeds — `{{form:slug}}` works in both modes
+
+Drop `{{form:some-form-slug}}` anywhere in your HTML. AgentHQ substitutes
+it with a styled form that POSTs to `/api/form/<slug>`. In full-HTML mode
+the form brings its own scoped styles so it looks polished regardless of
+your page's design system.
+
+If you want a **custom-designed form** that matches your page exactly,
+write the `<form>` yourself with any markup you like, set
+`action="/api/form/<slug>" method="POST"` and add a small fetch
+intercept — or skip the marker entirely and post via JS on submit.
+
+---
+
+## Themed mode (the fallback)
+
+If you just want a fast, decent-looking page without thinking about
+design, write body fragments and let the AgentHQ dark-futuristic theme
+wrap them. Class conventions: `.hero`, `.features`, `.card`, `.button`,
+`.button.ghost`, `.stat`, `.eyebrow`, `.cta-row`, `footer`.
+
+Example:
+
+```html
+<section class="hero">
+  <span class="eyebrow">Brand</span>
+  <h1>Short headline.</h1>
+  <p>Subhead sentence.</p>
+  <div class="cta-row">
+    <a href="#contact" class="button">Primary</a>
+    <a href="#features" class="button ghost">Secondary</a>
+  </div>
+</section>
+{{form:contact}}
+```
+
+POST this as `html_body` the same way — no `<!doctype>` up top. AgentHQ
+detects it's a fragment and wraps it.
+
+---
+
+## Design principles that matter in any mode
+
+1. **One clear value prop** in the hero. Not three.
+2. **Copy beats design.** A beautiful page with weak copy converts worse than a plain page with strong copy.
+3. **Social proof early** — logo strip, client quote, or stat within the first scroll.
+4. **Mobile-first** — test your HTML at 375px width in your head. Typography stack, button sizes, grid collapses.
+5. **One CTA per section.** The reader doesn't need to choose between ten things.
+6. **Load a web font carefully** — hero bold display font, body system or Inter. Don't load 10 weights.
+7. **Images are optional.** Great typography beats bad stock photos.
+8. **Footer is quiet.** Name, year, maybe a link. Don't stuff it.
+9. **Accent color with restraint.** One accent. Use it on the primary CTA and maybe one eyebrow.
+10. **Ship it, then iterate.** `page.update` is fast. First version doesn't need to be perfect.
 
 ---
 
 ## Error handling
 
-- **Slug conflict** — `page.create` will overwrite by default. If you want to
-  preserve the old one, append a suffix: `lumina-studio-v2`.
-- **Form not found** — if you reference a `{{form:slug}}` that doesn't exist,
-  the page renders fine but the section is empty. Always create the form
-  first.
-- **Bad HTML** — invalid markup still renders but may look odd. Use a quick
-  mental scan: opening tags match closing tags, no stray `<div>`s.
-- **API returns error** — surface it to the user in plain English. Don't
-  retry silently; ask them what to do.
+- **Slug conflict** — `page.create` will overwrite silently. If that's bad, pick a new slug.
+- **Form not found** — `{{form:slug}}` referencing a non-existent form renders as nothing (silent). Always `form.create` first.
+- **Bad HTML** — browsers render broken markup gracefully but it may look wrong. Validate mentally: doctype, html, head, body, closing tags match.
+- **API returns error** — surface it to the user verbatim. Don't silently retry.
+
+---
+
+## End-to-end one-shot example (copy, adapt, send)
+
+User: *"Build me a landing page for my AI consulting agency called Atlas
+Labs. Deep blue accent. I help SaaS companies ship agent features."*
+
+```bash
+# 1) Create the form
+curl -X POST $AGENT_HQ_URL/api/command -H "X-API-Key: $AGENT_HQ_KEY" -H "Content-Type: application/json" -d '{"action":"form.create","params":{"slug":"atlas-inquiry","title":"Let'"'"'s talk","description":"A few lines and I'"'"'ll reply within a day.","fields":[{"name":"name","label":"Name","type":"text","required":true},{"name":"email","label":"Work email","type":"email","required":true},{"name":"company","label":"Company","type":"text","required":true},{"name":"scope","label":"What are you working on?","type":"textarea","required":true}]}}'
+
+# 2) Publish the page
+curl -X POST $AGENT_HQ_URL/api/command -H "X-API-Key: $AGENT_HQ_KEY" -H "Content-Type: application/json" -d @- <<'EOF'
+{
+  "action": "page.create",
+  "params": {
+    "slug": "atlas-labs",
+    "title": "Atlas Labs — AI for SaaS",
+    "linked_form_slug": "atlas-inquiry",
+    "html_body": "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Atlas Labs</title><script src=\"https://cdn.tailwindcss.com\"></script><link href=\"https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Inter:wght@400;500;600;700&display=swap\" rel=\"stylesheet\"><style>body{font-family:Inter,sans-serif}.serif{font-family:'Instrument Serif',serif}</style></head><body class=\"bg-slate-950 text-slate-100 antialiased\"><section class=\"min-h-screen flex items-center px-6 md:px-12 relative overflow-hidden\"><div class=\"absolute inset-0 bg-gradient-to-br from-blue-500/15 via-transparent to-transparent\"></div><div class=\"relative max-w-5xl mx-auto w-full\"><span class=\"inline-block text-xs tracking-[0.3em] uppercase text-blue-400 font-semibold mb-6\">Atlas Labs</span><h1 class=\"serif text-5xl md:text-7xl lg:text-8xl leading-[0.95] mb-6\">AI agents<br/>for SaaS.</h1><p class=\"text-lg md:text-xl text-slate-400 max-w-xl mb-10 leading-relaxed\">We ship production agent features for SaaS companies that can'"'"'t afford a research team.</p><div class=\"flex flex-wrap gap-3\"><a href=\"#contact\" class=\"inline-flex items-center gap-2 bg-blue-500 hover:bg-blue-400 text-black font-semibold px-6 py-3 rounded-full transition\">Book a call →</a><a href=\"#work\" class=\"inline-flex items-center gap-2 border border-slate-700 hover:border-slate-500 px-6 py-3 rounded-full transition\">See case studies</a></div></div></section><section id=\"work\" class=\"px-6 md:px-12 py-24\"><div class=\"max-w-5xl mx-auto\"><h2 class=\"serif text-4xl md:text-5xl mb-16\">What we ship.</h2><div class=\"grid md:grid-cols-3 gap-6\"><div class=\"bg-slate-900/50 backdrop-blur border border-slate-800 rounded-2xl p-8 hover:border-blue-500/30 transition\"><div class=\"text-blue-400 text-sm font-semibold tracking-widest uppercase mb-3\">01</div><h3 class=\"serif text-2xl mb-3\">Agent runtimes</h3><p class=\"text-slate-400 leading-relaxed\">Production-grade agent infrastructure, not demos.</p></div><div class=\"bg-slate-900/50 backdrop-blur border border-slate-800 rounded-2xl p-8 hover:border-blue-500/30 transition\"><div class=\"text-blue-400 text-sm font-semibold tracking-widest uppercase mb-3\">02</div><h3 class=\"serif text-2xl mb-3\">Evals that matter</h3><p class=\"text-slate-400 leading-relaxed\">Your users are the benchmark, not public leaderboards.</p></div><div class=\"bg-slate-900/50 backdrop-blur border border-slate-800 rounded-2xl p-8 hover:border-blue-500/30 transition\"><div class=\"text-blue-400 text-sm font-semibold tracking-widest uppercase mb-3\">03</div><h3 class=\"serif text-2xl mb-3\">Safety & cost</h3><p class=\"text-slate-400 leading-relaxed\">Every call priced, every action logged, every agent reviewable.</p></div></div></div></section><section id=\"contact\" class=\"px-6 md:px-12 py-24\"><div class=\"max-w-xl mx-auto\">{{form:atlas-inquiry}}</div></section><footer class=\"px-6 md:px-12 py-12 border-t border-slate-900 text-sm text-slate-500\">© Atlas Labs</footer></body></html>"
+  }
+}
+EOF
+
+# 3) Log the activity
+curl -X POST $AGENT_HQ_URL/api/command -H "X-API-Key: $AGENT_HQ_KEY" -H "Content-Type: application/json" -d '{"action":"activity.log","params":{"category":"content","summary":"Published Atlas Labs landing page","details":{"slug":"atlas-labs"}}}'
+```
+
+Reply to user:
+
+> Done. Atlas Labs is live at **`<AGENT_HQ_URL>/p/atlas-labs`**.
+> Contact form submissions land in your Forms tab under `atlas-inquiry`.
+> Say the word if you want the hero darker, a testimonials section, or a
+> different headline — I'll update in place.

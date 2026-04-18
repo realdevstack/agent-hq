@@ -81,7 +81,7 @@ const ACTIONS: ActionGroup[] = [
     items: [
       {
         action: "page.create",
-        desc: "Publish a landing page at /p/<slug>. Pair with form.create to embed a form inline via {{form:<slug>}} marker. The theme wrapper handles typography, layout, and dark-futuristic glow — you just write the semantic HTML body.",
+        desc: "Publish a landing page at /p/<slug>. html_body can be a FULL HTML document (<!doctype html>...) — served verbatim, you own all styling (Tailwind CDN, fonts, whatever) — OR a body fragment, which gets wrapped in the dark-futuristic theme. Full HTML is recommended for anything real. Embed forms anywhere with {{form:<slug>}}.",
         params: "{ slug, title, html_body, linked_form_slug?, accent? }",
       },
       { action: "page.list", desc: "List all published pages" },
@@ -324,11 +324,24 @@ Voice:
 
 Pages (landing pages):
   page.create      { slug, title, html_body, linked_form_slug?, accent? }
-                   Publishes a landing page at /p/<slug>. Theme wrapper
-                   supplies fonts, CSS, layout. You write the semantic HTML
-                   body. Use {{form:<slug>}} marker to embed a form inline.
-                   Class conventions: .hero, .features, .card, .button,
-                   .button.ghost, .stat, .eyebrow, .cta-row, footer.
+                   Publishes a landing page at /p/<slug>.
+
+                   TWO MODES, auto-detected from html_body:
+
+                   - FULL HTML (recommended) — html_body starts with
+                     <!doctype html> or <html>. Served verbatim. You bring
+                     Tailwind CDN, your own fonts, your own everything.
+                     This is what you use for real landing pages.
+
+                   - THEMED — html_body is just a body fragment. AgentHQ
+                     wraps it in the dark-futuristic theme. Classes:
+                     .hero, .features, .card, .button, .button.ghost,
+                     .stat, .eyebrow, .cta-row, footer. Good for fast
+                     drafts, not for production work.
+
+                   Embed forms in either mode with {{form:<slug>}}. The
+                   form brings its own scoped styles in full-HTML mode.
+
                    Chain after form.create for one-shot lead capture pages.
   page.list
   page.update      { slug, html_body?, title?, accent?, linked_form_slug? }

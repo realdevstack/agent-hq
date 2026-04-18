@@ -30,20 +30,32 @@ export const handler: Handler = async (event) => {
   const page = await readJson<Page>(store(PAGES), slug);
   if (!page) return htmlResponse(404, notFoundHtml(slug));
 
+  // Detect whether the agent wrote a complete HTML document or just a body fragment.
+  // If complete, serve it as-is (full-HTML mode). Otherwise wrap in the theme (themed mode).
+  const head = page.html_body.trimStart().slice(0, 300).toLowerCase();
+  const isFullHtml = head.startsWith("<!doctype") || head.startsWith("<html");
+
+  // Form embed — works in both modes. The form HTML is self-contained with inline styles.
   let formEmbedHtml = "";
   let inlineFormSlug = page.linked_form_slug ?? null;
   const markerMatch = page.html_body.match(/\{\{form:([a-z0-9-]+)\}\}/i);
   if (markerMatch) inlineFormSlug = markerMatch[1];
-
   if (inlineFormSlug) {
     const form = await readJson<FormConfig>(store(FORMS), inlineFormSlug);
-    if (form) formEmbedHtml = renderInlineForm(form);
+    if (form) formEmbedHtml = renderInlineForm(form, isFullHtml);
   }
 
+  if (isFullHtml) {
+    // Full-HTML mode: substitute the form marker, return agent's HTML verbatim.
+    let html = page.html_body;
+    if (markerMatch) html = html.replace(markerMatch[0], formEmbedHtml);
+    return htmlResponse(200, html);
+  }
+
+  // Themed mode: wrap fragment in theme chrome.
   let body = page.html_body;
   if (markerMatch) body = body.replace(markerMatch[0], formEmbedHtml);
   else if (formEmbedHtml) body += formEmbedHtml;
-
   const html = wrapInTheme(page, body);
   return htmlResponse(200, html);
 };
@@ -63,7 +75,7 @@ function htmlResponse(status: number, html: string) {
   };
 }
 
-function renderInlineForm(form: FormConfig): string {
+function renderInlineForm(form: FormConfig, isFullHtml: boolean): string {
   const fields = form.fields
     .map((f, i) => {
       const name = f.name?.trim() || `field_${i + 1}`;
@@ -83,7 +95,33 @@ function renderInlineForm(form: FormConfig): string {
     })
     .join("\n");
 
+  // In full-HTML mode the form must be self-styled — the host page has its own CSS
+  // that won't include our theme. Inject a scoped style block so the form always looks
+  // consistent regardless of the surrounding markup.
+  const scopedStyles = isFullHtml
+    ? `
+<style>
+  .ahq-form-section { margin: 3rem 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .ahq-form-card { background: rgba(255,255,255,0.04); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 2rem; max-width: 560px; color: rgba(255,255,255,0.96); box-shadow: inset 0 1px 0 rgba(255,255,255,0.06); }
+  .ahq-form-card h2 { margin: 0 0 0.5rem; font-size: 1.6rem; font-weight: 700; }
+  .ahq-form-card .ahq-form-desc { color: rgba(255,255,255,0.7); margin: 0 0 1.25rem; line-height: 1.5; }
+  .ahq-form { display: flex; flex-direction: column; gap: 0.85rem; }
+  .ahq-field { display: flex; flex-direction: column; gap: 0.3rem; }
+  .ahq-field span { font-size: 0.7rem; letter-spacing: 0.2em; text-transform: uppercase; color: rgba(255,255,255,0.7); font-weight: 700; }
+  .ahq-field .req { color: #00BFFF; font-style: normal; }
+  .ahq-field input, .ahq-field textarea { background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; padding: 0.7rem 0.85rem; color: inherit; font-family: inherit; font-size: 1rem; transition: border-color 160ms, box-shadow 160ms; }
+  .ahq-field input:focus, .ahq-field textarea:focus { outline: none; border-color: rgba(0,191,255,0.55); box-shadow: 0 0 0 3px rgba(0,191,255,0.18); }
+  .ahq-submit { align-self: flex-start; margin-top: 0.25rem; padding: 0.75rem 1.4rem; border-radius: 12px; background: #00BFFF; color: #000; font-weight: 800; font-size: 0.8rem; letter-spacing: 0.1em; text-transform: uppercase; border: none; cursor: pointer; box-shadow: 0 0 24px rgba(0,191,255,0.35); transition: transform 160ms, box-shadow 160ms; font-family: inherit; }
+  .ahq-submit:hover { transform: translateY(-1px); box-shadow: 0 0 32px rgba(0,191,255,0.5); }
+  .ahq-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+  .ahq-status { min-height: 1.25rem; font-size: 0.88rem; color: rgba(255,255,255,0.7); }
+  .ahq-status.success { color: #00E676; font-weight: 600; }
+  .ahq-status.error { color: #FF4D6D; font-weight: 600; }
+</style>`
+    : "";
+
   return `
+${scopedStyles}
 <section class="ahq-form-section" id="contact">
   <div class="ahq-form-card">
     <h2>${escapeHtml(form.title)}</h2>
