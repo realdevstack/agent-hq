@@ -10,11 +10,25 @@ type AgentKeyRecord = { agent_id: string; sign_in_name: string; created_at: stri
 
 export async function getOrCreateApiKey(): Promise<string> {
   const s = store(CONFIG_STORE);
-  const existing = await readJson<ApiKeyRecord>(s, API_KEY_KEY);
-  if (existing?.key) return existing.key;
+
+  // Try up to 3 reads with short delays. Eventual consistency means a concurrent
+  // writer may have JUST stored the key — wait briefly before giving up and
+  // writing a new one.
+  for (let i = 0; i < 3; i++) {
+    const existing = await readJson<ApiKeyRecord>(s, API_KEY_KEY);
+    if (existing?.key) return existing.key;
+    if (i < 2) await new Promise((r) => setTimeout(r, 300 * (i + 1)));
+  }
+
   const key = `ahq_${nanoid(32)}`;
   await writeJson<ApiKeyRecord>(s, API_KEY_KEY, { key, created_at: new Date().toISOString() });
-  return key;
+
+  // Re-read after writing — if another caller raced us and their key is now
+  // stored, return their key instead. This keeps bootstrap idempotent across
+  // tabs/concurrent first visits.
+  await new Promise((r) => setTimeout(r, 500));
+  const stored = await readJson<ApiKeyRecord>(s, API_KEY_KEY);
+  return stored?.key ?? key;
 }
 
 export type ApiKeyIdentity =
