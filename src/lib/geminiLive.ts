@@ -9,11 +9,12 @@ import {
 import { call } from "./api";
 
 // Try newest Live models first, fall back if unavailable.
-// Verified via listModels for typical Gemini API keys in April 2026.
+// Both "models/..." and bare names are accepted by the SDK — we use bare.
 const MODEL_CANDIDATES = [
   "gemini-3.1-flash-live-preview",
   "gemini-2.5-flash-native-audio-latest",
   "gemini-2.5-flash-native-audio-preview-12-2025",
+  "gemini-2.5-flash-native-audio-preview-09-2025",
 ];
 
 export type VoiceEvent =
