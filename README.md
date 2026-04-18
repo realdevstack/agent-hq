@@ -84,6 +84,19 @@ Realistic personal-agent usage touches ~1-2% of the function quota. This is genu
 
 Everything else requires your API key.
 
+## OpenClaw skill — `mission-control-repurpose`
+
+The webinar demo skill is included at [`skills/mission-control-repurpose.md`](./skills/mission-control-repurpose.md).
+
+Paste it into your OpenClaw (or Claude Code, or any LLM agent) skill folder,
+set three env vars (`AGENT_HQ_URL`, `AGENT_HQ_KEY`, `GEMINI_API_KEY`), and
+trigger it with `"repurpose https://<any-url>"`. The agent will:
+
+1. Create a task card in your dashboard
+2. Draft 5 repurposed pieces (LinkedIn, Instagram, Blog, X, Email)
+3. Generate an Instagram cover image with Gemini
+4. Log everything to Activity so you watch it happen live
+
 ## License
 
 MIT — fork, rebrand, ship your own.

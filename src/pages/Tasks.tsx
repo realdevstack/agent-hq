@@ -1,4 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  useDraggable,
+  useDroppable,
+  type DragEndEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
 import PageHeader from "@/components/PageHeader";
 import GlassCard from "@/components/GlassCard";
 import TaskQuickAdd from "@/components/TaskQuickAdd";
@@ -24,6 +35,12 @@ const SEED: Task[] = [
 
 export default function Tasks() {
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [activeId, setActiveId] = useState<string | null>(null);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+  );
 
   useEffect(() => {
     void refresh();
@@ -35,12 +52,13 @@ export default function Tasks() {
     try {
       const list = await call<Task[]>("task.list");
       setTasks(list);
+      setLoaded(true);
     } catch {
-      // keep seed
+      setLoaded(true);
     }
   }
 
-  const display = tasks.length > 0 ? tasks : SEED;
+  const display = tasks.length > 0 ? tasks : loaded ? [] : SEED;
 
   const grouped = useMemo(() => {
     const map = Object.fromEntries(COLUMNS.map((c) => [c.status, [] as Task[]]));
@@ -52,42 +70,130 @@ export default function Tasks() {
     setTasks((prev) => [task, ...prev]);
   }
 
+  function handleDragStart(e: DragStartEvent) {
+    setActiveId(String(e.active.id));
+  }
+
+  async function handleDragEnd(e: DragEndEvent) {
+    setActiveId(null);
+    const taskId = String(e.active.id);
+    const over = e.over;
+    if (!over) return;
+    const newStatus = String(over.id) as TaskStatus;
+    const existing = display.find((t) => t.id === taskId);
+    if (!existing || existing.status === newStatus) return;
+
+    // Optimistic
+    setTasks((prev) =>
+      prev.map((t) => (t.id === taskId ? { ...t, status: newStatus } : t)),
+    );
+    try {
+      await call("task.move", { id: taskId, status: newStatus });
+    } catch {
+      // Rollback on failure — ignore for seed-only tasks
+      setTasks((prev) =>
+        prev.map((t) => (t.id === taskId ? { ...t, status: existing.status } : t)),
+      );
+    }
+  }
+
+  const activeTask = display.find((t) => t.id === activeId) ?? null;
+
   return (
     <>
       <PageHeader
         title="Tasks"
-        subtitle="Every card is work your agents are doing — or waiting on you for."
+        subtitle="Every card is work your agents are doing — or waiting on you for. Drag cards to move them."
       />
 
-      <div className="grid grid-cols-5 gap-4">
-        {COLUMNS.map((col) => (
-          <div key={col.status} className="flex flex-col gap-3">
-            <div className={cn("glass p-3 bg-gradient-to-b", col.accent)}>
-              <div className="flex items-center justify-between">
-                <span className="font-display text-xs tracking-widest uppercase text-white font-bold">
-                  {col.label}
-                </span>
-                <span className="text-xs text-white/70 font-mono font-bold">{grouped[col.status]?.length ?? 0}</span>
-              </div>
-            </div>
-            <div className="flex flex-col gap-3 min-h-[100px]">
+      <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+        <div className="grid grid-cols-5 gap-4">
+          {COLUMNS.map((col) => (
+            <KanbanColumn
+              key={col.status}
+              status={col.status}
+              label={col.label}
+              accent={col.accent}
+              count={grouped[col.status]?.length ?? 0}
+            >
               {col.status === "todo" && <TaskQuickAdd onAdded={handleAdded} />}
               {grouped[col.status]?.map((t) => (
-                <TaskCard key={t.id} task={t} />
+                <DraggableTaskCard key={t.id} task={t} />
               ))}
-            </div>
-          </div>
-        ))}
-      </div>
+            </KanbanColumn>
+          ))}
+        </div>
+
+        <DragOverlay dropAnimation={null}>
+          {activeTask && <TaskCard task={activeTask} dragging />}
+        </DragOverlay>
+      </DndContext>
     </>
   );
 }
 
-function TaskCard({ task }: { task: Task }) {
+function KanbanColumn({
+  status,
+  label,
+  accent,
+  count,
+  children,
+}: {
+  status: TaskStatus;
+  label: string;
+  accent: string;
+  count: number;
+  children: React.ReactNode;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id: status });
+  return (
+    <div className="flex flex-col gap-3">
+      <div className={cn("glass p-3 bg-gradient-to-b", accent)}>
+        <div className="flex items-center justify-between">
+          <span className="font-display text-xs tracking-widest uppercase text-white font-bold">
+            {label}
+          </span>
+          <span className="text-xs text-white/70 font-mono font-bold">{count}</span>
+        </div>
+      </div>
+      <div
+        ref={setNodeRef}
+        className={cn(
+          "flex flex-col gap-3 min-h-[200px] rounded-xl p-1.5 transition",
+          isOver && "bg-primary/[0.06] ring-2 ring-primary/40 ring-offset-0",
+        )}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function DraggableTaskCard({ task }: { task: Task }) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: task.id });
+  return (
+    <div
+      ref={setNodeRef}
+      {...attributes}
+      {...listeners}
+      className={cn(isDragging && "opacity-40")}
+    >
+      <TaskCard task={task} />
+    </div>
+  );
+}
+
+function TaskCard({ task, dragging }: { task: Task; dragging?: boolean }) {
   const priorityColor =
     task.priority === "high" ? "bg-danger" : task.priority === "medium" ? "bg-primary" : "bg-white/50";
   return (
-    <GlassCard hover className="p-4 cursor-grab active:cursor-grabbing">
+    <GlassCard
+      hover
+      className={cn(
+        "p-4 cursor-grab active:cursor-grabbing",
+        dragging && "ring-2 ring-primary shadow-glow rotate-1",
+      )}
+    >
       <div className="flex items-start gap-3">
         <span className={cn("w-1.5 h-1.5 rounded-full mt-2 shrink-0", priorityColor)} />
         <div className="flex-1 min-w-0">

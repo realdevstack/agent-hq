@@ -1,38 +1,52 @@
-import { useEffect, useState } from "react";
-import { Copy, Eye, EyeOff, RefreshCw } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  Copy,
+  Eye,
+  EyeOff,
+  CheckCheck,
+  Terminal,
+  Brain,
+  KeyRound,
+  Link as LinkIcon,
+  Sparkles,
+} from "lucide-react";
 import PageHeader from "@/components/PageHeader";
 import GlassCard from "@/components/GlassCard";
 import { call, getApiKey, setApiKey } from "@/lib/api";
+import { copyToClipboard } from "@/lib/utils";
 
-const ACTIONS: { group: string; items: { action: string; desc: string; params?: string }[] }[] = [
+type ActionSpec = { action: string; desc: string; params?: string };
+type ActionGroup = { group: string; items: ActionSpec[] };
+
+const ACTIONS: ActionGroup[] = [
   {
     group: "Agents",
     items: [
-      { action: "agent.register", desc: "Register a new AI agent", params: "{ name, role, emoji?, color? }" },
+      { action: "agent.register", desc: "Register yourself as a new AI agent. Returns { id, sign_in_name, api_key }.", params: "{ name, role, emoji?, color? }" },
       { action: "agent.list", desc: "List all registered agents" },
-      { action: "agent.heartbeat", desc: "Mark agent as online", params: "{ agent_id }" },
+      { action: "agent.heartbeat", desc: "Mark yourself as online (call every 1-5 min while active)", params: "{ agent_id }" },
     ],
   },
   {
     group: "Tasks",
     items: [
-      { action: "task.create", desc: "Create a task", params: "{ title, description?, assignee_id?, priority? }" },
+      { action: "task.create", desc: "Create a task card. Shows up on the kanban board.", params: "{ title, description?, assignee_id?, priority? }" },
       { action: "task.list", desc: "List all tasks" },
-      { action: "task.move", desc: "Move a task between columns", params: "{ id, status }" },
+      { action: "task.move", desc: "Move a task between columns: todo, doing, needs_input, canceled, done", params: "{ id, status }" },
       { action: "task.delete", desc: "Delete a task", params: "{ id }" },
     ],
   },
   {
     group: "Activity",
     items: [
-      { action: "activity.log", desc: "Write to the activity log", params: "{ agent_id?, category, summary, details? }" },
-      { action: "activity.list", desc: "Read the activity log", params: "{ limit? }" },
+      { action: "activity.log", desc: "Log a meaningful action. Categories: task, research, email, content, decision, error, system.", params: "{ agent_id?, category, summary, details? }" },
+      { action: "activity.list", desc: "Read the activity log (most recent first)", params: "{ limit? }" },
     ],
   },
   {
     group: "Forms",
     items: [
-      { action: "form.create", desc: "Create a public form", params: "{ slug, title, description?, fields }" },
+      { action: "form.create", desc: "Create a public form at /form/:slug", params: "{ slug, title, description?, fields }" },
       { action: "form.list", desc: "List all forms" },
       { action: "form.submissions", desc: "List submissions for a form", params: "{ slug }" },
     ],
@@ -40,20 +54,183 @@ const ACTIONS: { group: string; items: { action: string; desc: string; params?: 
   {
     group: "Webhooks",
     items: [
-      { action: "webhook.create", desc: "Create a webhook endpoint", params: "{ name, description? }" },
+      { action: "webhook.create", desc: "Create a catch-all inbound URL at /api/webhook/:id", params: "{ name, description? }" },
       { action: "webhook.list", desc: "List all webhooks" },
       { action: "webhook.events", desc: "List events received by a webhook", params: "{ id }" },
     ],
   },
 ];
 
+function buildFullGuide(baseUrl: string, apiKey: string): string {
+  const actions = ACTIONS.flatMap((g) =>
+    g.items.map((a) => `- \`${a.action}\` — ${a.desc}${a.params ? `\n  params: \`${a.params}\`` : ""}`),
+  ).join("\n");
+
+  return `# AgentHQ Integration Guide
+
+You have access to an AgentHQ mission control dashboard. Every action you take
+can be logged, shown to the human operator, and tracked over time.
+
+## Credentials
+
+- **Base URL:** ${baseUrl}/api/command
+- **Master API Key:** ${apiKey}
+
+## How every call works
+
+\`\`\`
+POST ${baseUrl}/api/command
+Headers:
+  Content-Type: application/json
+  X-API-Key: ${apiKey}
+Body:
+  {"action": "<group.verb>", "params": { ... }}
+\`\`\`
+
+Every response is \`{"ok": true, "data": ...}\` on success or
+\`{"ok": false, "error": "..."}\` on failure.
+
+## Quick start
+
+1. **Register yourself** so activity is attributed to you:
+
+\`\`\`bash
+curl -X POST ${baseUrl}/api/command \\
+  -H "Content-Type: application/json" \\
+  -H "X-API-Key: ${apiKey}" \\
+  -d '{"action":"agent.register","params":{"name":"Atlas","role":"Executive Assistant","emoji":"🧭"}}'
+\`\`\`
+
+You'll receive your own \`api_key\` — use it for all future calls so the
+dashboard knows who you are.
+
+2. **Log your first activity:**
+
+\`\`\`bash
+curl -X POST ${baseUrl}/api/command \\
+  -H "Content-Type: application/json" \\
+  -H "X-API-Key: <your agent api_key>" \\
+  -d '{"action":"activity.log","params":{"category":"system","summary":"I just came online"}}'
+\`\`\`
+
+## Full action catalog
+
+${actions}
+
+## Authentication
+
+Two key types work:
+
+- **Master key** (\`ahq_...\`) — admin, can do anything including register new agents
+- **Agent key** (\`akey_...\`) — scoped to one agent, actions auto-attribute to that agent
+
+Prefer the agent key for day-to-day operations.
+
+## Public endpoints (no key needed)
+
+- \`GET/POST ${baseUrl}/api/form/<slug>\` — public form intake
+- \`POST ${baseUrl}/api/webhook/<id>\` — catch-all webhook receiver
+`;
+}
+
+function buildAgentPrompt(baseUrl: string, apiKey: string): string {
+  return `You are connected to an AgentHQ dashboard — a visual mission control
+where the human operator watches your work in real time.
+
+ENDPOINT: ${baseUrl}/api/command
+API_KEY:  ${apiKey}
+
+Every tool-use action is an HTTP POST to the endpoint above with:
+  Header: X-API-Key: <api key>
+  Body:   {"action": "<group.verb>", "params": {...}}
+
+═══════════════════════════════════════════════════════════════
+FIRST ACTION ON STARTUP — register yourself if you haven't yet:
+═══════════════════════════════════════════════════════════════
+
+POST ${baseUrl}/api/command
+{"action":"agent.register","params":{"name":"<YOUR NAME>","role":"<YOUR ROLE>","emoji":"<EMOJI>"}}
+
+You'll get back { id, sign_in_name, api_key }. Save the api_key and use it
+for every call after this one — activities will auto-attribute to you.
+
+═══════════════════════════════════════════════════════════════
+ALWAYS LOG WHAT YOU DO — the human can only see what you log.
+═══════════════════════════════════════════════════════════════
+
+After any meaningful step (email sent, research done, file created, decision
+made), POST an activity log entry:
+
+{"action":"activity.log","params":{"category":"<cat>","summary":"<one line>"}}
+
+Categories: task, research, email, content, decision, error, system.
+Keep summaries short and specific. Example:
+  "Drafted 5 content pieces from blog URL"
+  "Decided NOT to send email — waiting for user approval"
+  "Errored on SendGrid call — rate limited, retrying in 60s"
+
+═══════════════════════════════════════════════════════════════
+CREATE A TASK CARD for anything substantive.
+═══════════════════════════════════════════════════════════════
+
+When the user asks you to do something non-trivial, create a task so it's
+visible on the kanban:
+
+{"action":"task.create","params":{"title":"<title>","priority":"<low|medium|high>"}}
+
+Move it as you work:
+  doing        → you're actively working on it
+  needs_input  → you're blocked on the human
+  done         → complete
+
+{"action":"task.move","params":{"id":"<task id>","status":"done"}}
+
+═══════════════════════════════════════════════════════════════
+FULL ACTION CATALOG
+═══════════════════════════════════════════════════════════════
+
+Agents:
+  agent.register     { name, role, emoji?, color? }
+  agent.list
+  agent.heartbeat    { agent_id }
+
+Tasks:
+  task.create        { title, description?, assignee_id?, priority? }
+  task.list
+  task.move          { id, status }
+  task.delete        { id }
+
+Activity:
+  activity.log       { agent_id?, category, summary, details? }
+  activity.list      { limit? }
+
+Forms:
+  form.create        { slug, title, description?, fields }
+  form.list
+  form.submissions   { slug }
+
+Webhooks:
+  webhook.create     { name, description? }
+  webhook.list
+  webhook.events     { id }
+
+═══════════════════════════════════════════════════════════════
+RESPONSE SHAPE
+═══════════════════════════════════════════════════════════════
+
+Success: {"ok": true, "data": ...}
+Failure: {"ok": false, "error": "..."}
+
+Never swallow errors — log them as activity entries with category "error".`;
+}
+
 export default function Integrations() {
   const [key, setKey] = useState<string | null>(getApiKey());
   const [show, setShow] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
 
   useEffect(() => {
     if (!key) {
-      // First visit — bootstrap key
       void (async () => {
         try {
           const res = await call<{ api_key: string }>("auth.bootstrap");
@@ -67,99 +244,291 @@ export default function Integrations() {
   }, [key]);
 
   const baseUrl = typeof window !== "undefined" ? window.location.origin : "";
-  const displayedKey = key ?? "— bootstrapping —";
+  const displayedKey = key ?? "ahq_loading...";
   const masked = show ? displayedKey : displayedKey.replace(/.(?=.{4})/g, "•");
+
+  const fullGuide = useMemo(() => buildFullGuide(baseUrl, displayedKey), [baseUrl, displayedKey]);
+  const agentPrompt = useMemo(() => buildAgentPrompt(baseUrl, displayedKey), [baseUrl, displayedKey]);
 
   const curlExample = `curl -X POST ${baseUrl}/api/command \\
   -H "Content-Type: application/json" \\
   -H "X-API-Key: ${displayedKey}" \\
-  -d '{"action":"activity.log","params":{"category":"email","summary":"Sent daily briefing"}}'`;
+  -d '{"action":"activity.log","params":{"category":"system","summary":"Hello from my agent"}}'`;
+
+  const [fallback, setFallback] = useState<{ label: string; text: string } | null>(null);
+
+  async function copy(label: string, value: string) {
+    const ok = await copyToClipboard(value);
+    if (ok) {
+      setCopied(label);
+      setTimeout(() => setCopied((c) => (c === label ? null : c)), 2000);
+    } else {
+      // Neither clipboard API nor execCommand worked — surface a manual-copy modal
+      setFallback({ label, text: value });
+    }
+  }
 
   return (
     <>
       <PageHeader
         title="Integrations"
-        subtitle="Everything your agent needs to talk to this dashboard. Copy. Paste. Go."
+        subtitle="Plug any agent — OpenClaw, Claude Code, Hermes, Python, cURL — into this dashboard in under two minutes."
       />
 
+      {/* ── HERO: ONE-CLICK GIVES ──────────────────────────────── */}
       <div className="grid grid-cols-2 gap-5 mb-8">
-        <GlassCard>
-          <div className="font-display text-sm tracking-widest uppercase text-white/70 mb-3">Your API Key</div>
-          <div className="flex items-center gap-2 font-mono text-sm bg-black/30 border border-white/[0.06] rounded-lg px-3 py-2.5">
-            <span className="flex-1 truncate text-primary">{masked}</span>
-            <button onClick={() => setShow((s) => !s)} className="text-white/60 hover:text-white shrink-0">
-              {show ? <EyeOff size={16} /> : <Eye size={16} />}
-            </button>
-            <button
-              onClick={() => key && navigator.clipboard.writeText(key)}
-              className="text-white/60 hover:text-white shrink-0"
-            >
-              <Copy size={16} />
-            </button>
-          </div>
-          <p className="text-xs text-white/40 mt-3">
-            Paste this into your OpenClaw / Claude Code / Hermes agent. Keep it secret.
-          </p>
-        </GlassCard>
-
-        <GlassCard>
-          <div className="font-display text-sm tracking-widest uppercase text-white/70 mb-3">Base URL</div>
-          <div className="flex items-center gap-2 font-mono text-sm bg-black/30 border border-white/[0.06] rounded-lg px-3 py-2.5">
-            <span className="flex-1 truncate text-primary">{baseUrl}/api/command</span>
-            <button
-              onClick={() => navigator.clipboard.writeText(`${baseUrl}/api/command`)}
-              className="text-white/60 hover:text-white shrink-0"
-            >
-              <Copy size={16} />
-            </button>
-          </div>
-          <p className="text-xs text-white/40 mt-3">
-            All agent actions POST to this single endpoint with <code>{'{ action, params }'}</code>.
-          </p>
-        </GlassCard>
+        <BigCopyCard
+          icon={Brain}
+          accent="primary"
+          title="Agent System Prompt"
+          desc="Paste this into your agent's skill file, SOUL.md, or system prompt. Works with OpenClaw, Claude Code, Hermes, or any LLM-powered agent."
+          buttonLabel={copied === "prompt" ? "Copied — paste into your agent" : "Copy Agent System Prompt"}
+          copied={copied === "prompt"}
+          onCopy={() => void copy("prompt", agentPrompt)}
+        />
+        <BigCopyCard
+          icon={Sparkles}
+          accent="purple"
+          title="Full Integration Guide"
+          desc="The complete markdown doc — base URL, API key, every action, cURL examples. Drop into your agent's context or a SKILL.md file."
+          buttonLabel={copied === "guide" ? "Copied — paste anywhere" : "Copy Full Integration Guide"}
+          copied={copied === "guide"}
+          onCopy={() => void copy("guide", fullGuide)}
+        />
       </div>
 
+      {/* ── CREDENTIALS ──────────────────────────────── */}
+      <h2 className="font-display text-sm tracking-widest text-white font-bold mb-4 uppercase flex items-center gap-2">
+        <KeyRound size={14} className="text-primary" strokeWidth={2.5} /> Your Credentials
+      </h2>
+      <div className="grid grid-cols-2 gap-5 mb-8">
+        <CredentialCard
+          label="Base URL"
+          value={`${baseUrl}/api/command`}
+          icon={LinkIcon}
+          hint="All agent actions POST to this single endpoint."
+          onCopy={() => void copy("baseurl", `${baseUrl}/api/command`)}
+          copied={copied === "baseurl"}
+        />
+        <CredentialCard
+          label="Master API Key"
+          value={masked}
+          realValue={displayedKey}
+          icon={KeyRound}
+          hint="Admin access. Share only with agents you trust — or register per-agent keys on the Agents page."
+          show={show}
+          onToggleShow={() => setShow((s) => !s)}
+          onCopy={() => void copy("masterkey", displayedKey)}
+          copied={copied === "masterkey"}
+        />
+      </div>
+
+      {/* ── CURL TEST ──────────────────────────────── */}
       <GlassCard className="mb-8">
         <div className="flex items-center justify-between mb-3">
-          <div className="font-display text-sm tracking-widest uppercase text-white/70">Quick Test — cURL</div>
-          <button
-            onClick={() => navigator.clipboard.writeText(curlExample)}
-            className="text-xs flex items-center gap-1.5 text-primary hover:text-primary/80"
-          >
-            <Copy size={14} /> Copy
-          </button>
+          <div className="font-display text-sm tracking-widest text-white font-bold uppercase flex items-center gap-2">
+            <Terminal size={14} className="text-accent" strokeWidth={2.5} /> Try It Now — cURL
+          </div>
+          <CopyPill
+            label={copied === "curl" ? "Copied" : "Copy"}
+            copied={copied === "curl"}
+            onClick={() => void copy("curl", curlExample)}
+          />
         </div>
-        <pre className="font-mono text-xs bg-black/40 border border-white/[0.06] rounded-lg p-4 text-white/80 overflow-x-auto whitespace-pre-wrap">
+        <pre className="font-mono text-xs bg-black/60 border border-white/[0.08] rounded-lg p-4 text-white/95 overflow-x-auto whitespace-pre-wrap leading-relaxed">
 {curlExample}
         </pre>
+        <p className="text-xs text-white/70 mt-3 font-medium">
+          Run this and watch the <span className="text-primary font-bold">Activity</span> page —
+          your event shows up instantly.
+        </p>
       </GlassCard>
 
-      <h2 className="font-display text-lg tracking-widest uppercase text-white/80 mb-4">Action Catalog</h2>
+      {/* ── MANUAL COPY FALLBACK ──────────────────────────────── */}
+      {fallback && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-6">
+          <div
+            className="absolute inset-0 bg-black/75 backdrop-blur-sm"
+            onClick={() => setFallback(null)}
+          />
+          <div className="relative glass p-6 max-w-3xl w-full">
+            <h3 className="font-display text-lg font-bold mb-2">Copy manually</h3>
+            <p className="text-sm text-white/75 font-medium mb-4">
+              Your browser blocked the automatic copy. Select the text below (Cmd+A / Ctrl+A)
+              and copy it (Cmd+C / Ctrl+C).
+            </p>
+            <textarea
+              readOnly
+              value={fallback.text}
+              className="w-full h-80 bg-black/60 border border-white/10 rounded-lg p-4 text-xs font-mono text-white/95"
+              onFocus={(e) => e.currentTarget.select()}
+            />
+            <div className="flex items-center gap-3 mt-3">
+              <button
+                onClick={() => setFallback(null)}
+                className="px-4 py-2.5 rounded-xl bg-primary text-black font-display font-black tracking-widest text-sm uppercase"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── ACTION CATALOG ──────────────────────────────── */}
+      <h2 className="font-display text-sm tracking-widest text-white font-bold mb-4 uppercase">
+        Action Catalog
+      </h2>
       <div className="flex flex-col gap-5">
         {ACTIONS.map((group) => (
           <GlassCard key={group.group}>
-            <div className="font-display text-sm tracking-widest uppercase text-primary mb-3">{group.group}</div>
+            <div className="font-display text-sm tracking-widest uppercase text-primary font-bold mb-4">
+              {group.group}
+            </div>
             <div className="divide-y divide-white/[0.06]">
               {group.items.map((a) => (
                 <div key={a.action} className="py-3 flex items-start gap-6">
-                  <code className="font-mono text-sm text-accent min-w-[200px] shrink-0">{a.action}</code>
+                  <code className="font-mono text-sm text-accent font-bold min-w-[200px] shrink-0">
+                    {a.action}
+                  </code>
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm text-white/90">{a.desc}</div>
+                    <div className="text-sm text-white font-medium">{a.desc}</div>
                     {a.params && (
-                      <code className="font-mono text-xs text-white/50 block mt-1">{a.params}</code>
+                      <code className="font-mono text-xs text-white/70 block mt-1.5 font-semibold">
+                        params: {a.params}
+                      </code>
                     )}
                   </div>
+                  <button
+                    onClick={() =>
+                      void copy(
+                        `act-${a.action}`,
+                        `POST ${baseUrl}/api/command\nX-API-Key: ${displayedKey}\n\n{"action":"${a.action}","params":${a.params ?? "{}"}}`,
+                      )
+                    }
+                    className="text-white/50 hover:text-primary transition shrink-0"
+                    title="Copy template"
+                  >
+                    {copied === `act-${a.action}` ? <CheckCheck size={14} /> : <Copy size={14} />}
+                  </button>
                 </div>
               ))}
             </div>
           </GlassCard>
         ))}
       </div>
-
-      <div className="mt-8 flex items-center gap-2 text-xs text-white/40">
-        <RefreshCw size={12} />
-        Want this as a single file your agent can read? Copy the base URL and action names above into your agent's skill file.
-      </div>
     </>
+  );
+}
+
+// ── Components ────────────────────────────────────────────────
+
+function BigCopyCard({
+  icon: Icon,
+  accent,
+  title,
+  desc,
+  buttonLabel,
+  copied,
+  onCopy,
+}: {
+  icon: typeof Brain;
+  accent: "primary" | "purple";
+  title: string;
+  desc: string;
+  buttonLabel: string;
+  copied: boolean;
+  onCopy: () => void;
+}) {
+  const accentClass = accent === "primary" ? "from-primary/30 to-primary/5 border-primary/40" : "from-purple/30 to-purple/5 border-purple/40";
+  const btnClass =
+    accent === "primary"
+      ? "bg-primary text-black hover:bg-primary/90 shadow-glow"
+      : "bg-purple text-white hover:bg-purple/90 shadow-[0_0_24px_rgba(168,85,247,0.45)]";
+
+  return (
+    <div className={`glass p-6 flex flex-col gap-4 bg-gradient-to-br ${accentClass} border-2`}>
+      <div className="flex items-center gap-3">
+        <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${accent === "primary" ? "bg-primary/20" : "bg-purple/20"}`}>
+          <Icon size={22} strokeWidth={2.3} className={accent === "primary" ? "text-primary" : "text-purple"} />
+        </div>
+        <div className="font-display text-lg tracking-wide text-white font-bold">{title}</div>
+      </div>
+      <p className="text-sm text-white/85 leading-relaxed font-medium">{desc}</p>
+      <button
+        onClick={onCopy}
+        className={`mt-1 flex items-center justify-center gap-2 px-5 py-3 rounded-xl font-display tracking-widest text-sm uppercase font-black transition ${btnClass}`}
+      >
+        {copied ? <CheckCheck size={16} strokeWidth={3} /> : <Copy size={16} strokeWidth={2.8} />}
+        {buttonLabel}
+      </button>
+    </div>
+  );
+}
+
+function CredentialCard({
+  label,
+  value,
+  realValue,
+  icon: Icon,
+  hint,
+  show,
+  onToggleShow,
+  onCopy,
+  copied,
+}: {
+  label: string;
+  value: string;
+  realValue?: string;
+  icon: typeof KeyRound;
+  hint: string;
+  show?: boolean;
+  onToggleShow?: () => void;
+  onCopy: () => void;
+  copied: boolean;
+}) {
+  return (
+    <GlassCard>
+      <div className="flex items-center gap-2 font-display text-xs tracking-widest text-white/80 font-bold uppercase mb-3">
+        <Icon size={13} strokeWidth={2.5} className="text-primary" />
+        {label}
+      </div>
+      <div className="flex items-center gap-2 font-mono text-sm bg-black/60 border border-white/[0.08] rounded-lg px-3 py-2.5">
+        <span className="flex-1 truncate text-primary font-bold">{value}</span>
+        {onToggleShow && (
+          <button onClick={onToggleShow} className="text-white/70 hover:text-white shrink-0" title={show ? "Hide" : "Show"}>
+            {show ? <EyeOff size={15} /> : <Eye size={15} />}
+          </button>
+        )}
+        <button onClick={onCopy} className="text-white/70 hover:text-white shrink-0" title="Copy">
+          {copied ? <CheckCheck size={15} className="text-success" /> : <Copy size={15} />}
+        </button>
+      </div>
+      <p className="text-xs text-white/70 mt-3 font-medium">{hint}</p>
+    </GlassCard>
+  );
+}
+
+function CopyPill({
+  label,
+  copied,
+  onClick,
+}: {
+  label: string;
+  copied: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-display font-bold tracking-widest uppercase transition ${
+        copied
+          ? "bg-success/20 text-success border border-success/40"
+          : "bg-white/5 hover:bg-primary/15 text-white/80 hover:text-primary border border-white/10 hover:border-primary/40"
+      }`}
+    >
+      {copied ? <CheckCheck size={13} strokeWidth={3} /> : <Copy size={13} strokeWidth={2.5} />}
+      {label}
+    </button>
   );
 }

@@ -5,7 +5,7 @@ import MetricCard from "@/components/MetricCard";
 import AgentSprite from "@/components/AgentSprite";
 import PageHeader from "@/components/PageHeader";
 import { call } from "@/lib/api";
-import { timeAgo } from "@/lib/utils";
+import { timeAgo, hasRegisteredRealAgent } from "@/lib/utils";
 import type { Agent, Activity, Task } from "@/lib/types";
 
 // ── Demo seed so empty deploy looks alive ────────────────────────────
@@ -60,8 +60,9 @@ export default function Office() {
     }
   }
 
-  const displayAgents = agents.length > 0 ? agents : SEED_AGENTS;
-  const displayActivity = activity.length > 0 ? activity : SEED_ACTIVITY;
+  const seedSuppressed = hasRegisteredRealAgent();
+  const displayAgents = agents.length > 0 ? agents : seedSuppressed ? [] : SEED_AGENTS;
+  const displayActivity = activity.length > 0 ? activity : seedSuppressed ? [] : SEED_ACTIVITY;
   const taskInProgress = tasks.filter((t) => t.status === "doing").length;
 
   const stats = useMemo(
