@@ -130,6 +130,13 @@ export const handler: Handler = async (event) => {
         await writeJson(s, agent_id, updated);
         return ok(updated);
       }
+      case "agent.delete": {
+        const { id } = params as Record<string, string>;
+        if (!id) return fail(400, "id required");
+        await store(AGENTS).delete(id);
+        await logActivity({ agent_id: null, category: "system", summary: `Agent ${id} deleted` });
+        return ok({ id, deleted: true });
+      }
 
       // ── TASKS ──────────────────────────────────────────────
       case "task.create": {

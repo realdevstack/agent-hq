@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Plus, Copy, Eye, EyeOff, AtSign } from "lucide-react";
+import { Plus, Copy, Eye, EyeOff, AtSign, Trash2 } from "lucide-react";
 import PageHeader from "@/components/PageHeader";
 import GlassCard from "@/components/GlassCard";
 import StatusRing, { StatusLabel } from "@/components/StatusRing";
@@ -32,6 +32,16 @@ export default function Agents() {
       setAgents(await call<Agent[]>("agent.list"));
     } catch {
       // keep seed
+    }
+  }
+
+  async function deleteAgent(id: string, name: string) {
+    if (!confirm(`Delete agent "${name}"? This removes the sign-in key permanently.`)) return;
+    try {
+      await call("agent.delete", { id });
+      setAgents((prev) => prev.filter((a) => a.id !== id));
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Delete failed");
     }
   }
 
@@ -120,7 +130,16 @@ export default function Agents() {
 
                 <div className="flex items-center justify-between text-xs text-white/70 font-mono border-t border-white/[0.06] pt-3 font-semibold">
                   <StatusLabel status={a.status} />
-                  <span>last seen {timeAgo(a.last_heartbeat)}</span>
+                  <div className="flex items-center gap-3">
+                    <span>last seen {timeAgo(a.last_heartbeat)}</span>
+                    <button
+                      onClick={() => void deleteAgent(a.id, a.name)}
+                      className="text-white/50 hover:text-danger transition"
+                      title="Delete agent"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
                 </div>
               </GlassCard>
             );
