@@ -66,6 +66,32 @@ const TOOLS: FunctionDeclaration[] = [
     description: "List all tasks on the kanban board, any status.",
     parameters: { type: Type.OBJECT, properties: {} },
   },
+  {
+    name: "list_campaigns",
+    description:
+      "List every outreach campaign with live counters: status, leads imported, emails sent, delivered, clicked, replied. Use this when the user asks 'how are my campaigns doing?' or 'what's running?' or references a specific campaign by name (match from this list).",
+    parameters: { type: Type.OBJECT, properties: {} },
+  },
+  {
+    name: "list_recent_replies",
+    description:
+      "List the most recent inbound replies across all outreach campaigns — who replied, the subject line, and a short preview of the reply text. Use this when the user asks 'any replies?', 'who responded?', 'what did they say?', or 'what's in my inbox today'.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        limit: {
+          type: Type.NUMBER,
+          description: "How many replies to return. Default 10.",
+        },
+      },
+    },
+  },
+  {
+    name: "outreach_summary",
+    description:
+      "Aggregate outreach stats across every campaign: total leads, total sent, delivered, bounced, clicked, replied. Use this when the user asks 'how's outreach going overall?', 'what are my numbers today?', or wants a topline view.",
+    parameters: { type: Type.OBJECT, properties: {} },
+  },
 ];
 
 const BASE_SYSTEM_INSTRUCTION = `You are the voice of AgentHQ — a mission control dashboard for AI agents.
@@ -74,13 +100,49 @@ You're talking directly to the human operator through their microphone.
 Your personality: warm, concise, confident. One or two sentences per response.
 No filler. No "great question!" — just be useful.
 
-You have real tools. When the user asks you to do something:
-- If they want a task tracked: call create_task
-- After any meaningful action: call log_activity so the dashboard shows it
-- When asked about current state: call list_agents or list_tasks
+You have real tools. Pick the right one:
+- Task tracking: create_task, list_tasks
+- Logging what you just did: log_activity
+- Who's in the system: list_agents
+- Outreach campaigns state: list_campaigns — returns every campaign with live counters (leads, sent, delivered, clicked, replied). Use this whenever the user mentions a campaign by name, asks "how's [thing] doing?", or wants pipeline status.
+- Inbound replies: list_recent_replies — the user's inbox. Use when they say "any replies", "who replied", "what did they say".
+- Top-line stats: outreach_summary — totals across all campaigns. Use when they ask about overall performance, "how's outreach going", "what are my numbers today".
+
+When summarizing outreach stats out loud, lead with the most actionable number (replies > clicks > delivered > sent). Don't read every counter — pick the ones that tell the story.
+If the user references a campaign by name, match it against list_campaigns results by substring — you don't need an exact match.
 
 Acknowledge briefly, perform the action, then confirm what you did out loud.
 Keep replies under 15 seconds of speech unless they ask for detail.`;
+
+// Trim tool results so voice responses stay snappy and we don't blow up the
+// model's context with fields it doesn't need. Gemini Live handles arrays fine
+// but giant JSON slows everything down.
+function summarizeCampaigns(data: unknown): unknown {
+  const campaigns = Array.isArray(data) ? data : [];
+  return campaigns.map((c: Record<string, unknown>) => ({
+    name: c.name,
+    status: c.status,
+    query: c.query,
+    leads_imported: c.leads_imported ?? 0,
+    emails_sent: c.emails_sent ?? 0,
+    emails_delivered: c.emails_delivered ?? 0,
+    emails_clicked: c.emails_clicked ?? 0,
+    emails_replied: c.emails_replied ?? 0,
+    framework: c.default_framework ?? "one-off",
+    created_at: c.created_at,
+  }));
+}
+
+function summarizeReplies(data: unknown): unknown {
+  const replies = Array.isArray(data) ? data : [];
+  return replies.map((r: Record<string, unknown>) => ({
+    from: r.from,
+    subject: r.subject,
+    preview: (typeof r.text === "string" ? r.text : "").slice(0, 280),
+    received_at: r.received_at,
+    campaign_id: r.campaign_id,
+  }));
+}
 
 async function runTool(name: string, params: Record<string, unknown>): Promise<unknown> {
   switch (name) {
@@ -92,6 +154,17 @@ async function runTool(name: string, params: Record<string, unknown>): Promise<u
       return call("agent.list");
     case "list_tasks":
       return call("task.list");
+    case "list_campaigns": {
+      const campaigns = await call("outreach.campaign.list");
+      return summarizeCampaigns(campaigns);
+    }
+    case "list_recent_replies": {
+      const limit = typeof params.limit === "number" ? params.limit : 10;
+      const replies = await call("outreach.replies.list", { limit });
+      return summarizeReplies(replies);
+    }
+    case "outreach_summary":
+      return call("outreach.analytics.summary");
     default:
       throw new Error(`Unknown tool: ${name}`);
   }

@@ -12,12 +12,14 @@ import type { VoiceInvitation } from "@/lib/types";
 type Phase = "loading" | "onboarding" | "idle" | "session";
 
 const SUGGESTED_PROMPTS = [
+  "How are my outreach campaigns doing?",
+  "Any replies today? What did they say?",
+  "Give me a top-line summary of my outreach numbers.",
+  "What's the status of the Austin Dentists campaign?",
   "Create a task to follow up with Acme Corp tomorrow as high priority.",
-  "Log that I just sent the proposal to the client — category email.",
   "What tasks are in progress right now?",
   "Show me all my active agents.",
-  "Remind me to review yesterday's meeting notes — make it a medium priority task.",
-  "Log a decision: I'm pausing the Q2 content push until after the launch.",
+  "Log a decision: pausing the Q2 content push until after the launch.",
 ];
 
 export default function Voice() {
