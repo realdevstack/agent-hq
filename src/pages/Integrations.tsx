@@ -94,6 +94,94 @@ const ACTIONS: ActionGroup[] = [
       { action: "page.delete", desc: "Unpublish a page", params: "{ slug }" },
     ],
   },
+  {
+    group: "Outreach (ICP → leads → emails → replies)",
+    items: [
+      {
+        action: "outreach.preview",
+        desc: "Convert a free-text ICP into a structured Google Maps search plan: { location, searchTerms[], maxResults }. No side effects — safe to call repeatedly.",
+        params: "{ query, max_results? }",
+      },
+      {
+        action: "outreach.campaign.create",
+        desc: "Persist a new campaign. Pass the structured_query you got from preview so the UI shows the plan.",
+        params: "{ name, query, structured_query?, description? }",
+      },
+      { action: "outreach.campaign.list", desc: "All campaigns, newest first." },
+      { action: "outreach.campaign.get", desc: "One campaign by id.", params: "{ id }" },
+      { action: "outreach.campaign.update", desc: "Patch fields on a campaign (e.g. rename).", params: "{ id, ...patch }" },
+      {
+        action: "outreach.campaign.run",
+        desc: "Starts the Apify Google Maps actor asynchronously and returns immediately. Client polls outreach.campaign.sync to finalize. ALWAYS show the human the structured_query preview and get explicit approval (GATE 1) before calling this — Apify costs real credits.",
+        params: "{ id }",
+      },
+      {
+        action: "outreach.campaign.sync",
+        desc: "Called on a poll loop while a campaign is 'searching'. Queries Apify's run status. When SUCCEEDED, imports dataset items as leads. When FAILED/ABORTED/TIMED-OUT, marks the campaign failed. Safe no-op if the campaign isn't running.",
+        params: "{ id }",
+      },
+      { action: "outreach.campaign.delete", desc: "Removes a campaign record. Leads and emails become orphaned in storage but invisible to the UI.", params: "{ id }" },
+      {
+        action: "outreach.leads.list",
+        desc: "All leads for a campaign, newest first.",
+        params: "{ campaign_id, limit? }",
+      },
+      { action: "outreach.leads.count", desc: "Cheap count.", params: "{ campaign_id }" },
+      {
+        action: "outreach.leads.add_test",
+        desc: "CRITICAL FOR DEMOS. Seeds a test lead with the user's own email so they can watch send→reply live. Shows as 🧪 TEST in the UI. Always offer this before the first real send in a session.",
+        params: "{ campaign_id, email, name?, notes? }",
+      },
+      { action: "outreach.leads.delete", desc: "Remove one lead.", params: "{ campaign_id, lead_id }" },
+      {
+        action: "outreach.emails.generate_one",
+        desc: "Drafts exactly one email for one lead. PREFERRED for agent use — call this in a loop so you stay well under Netlify's 26s function cap and show live progress. Skips leads that already have drafts. Returns { ..., skipped: true } on duplicate.",
+        params: "{ campaign_id, lead_id, sender_name?, sender_company?, sender_offer? }",
+      },
+      {
+        action: "outreach.emails.generate",
+        desc: "Batch variant — drafts for every lead that has an email. Can timeout for large campaigns. Prefer generate_one in a loop for >10 leads.",
+        params: "{ campaign_id, sender_name?, sender_company?, sender_offer? }",
+      },
+      { action: "outreach.emails.list", desc: "All drafts/sends for a campaign.", params: "{ campaign_id, limit? }" },
+      {
+        action: "outreach.emails.update",
+        desc: "Edit a single draft before send.",
+        params: "{ campaign_id, email_id, subject?, body_text?, body_html? }",
+      },
+      {
+        action: "outreach.emails.send",
+        desc: "Fires drafted emails via AgentMail from the user's own inbox. Rewrites every outbound link through /t/:token for click tracking. ALWAYS get explicit human approval (GATE 2) before calling this — these are real emails to real people.",
+        params: "{ campaign_id, email_ids? }",
+      },
+      { action: "outreach.replies.list", desc: "Inbound replies. Filter by campaign id if provided.", params: "{ campaign_id?, limit? }" },
+      { action: "outreach.replies.get", desc: "One reply's full content.", params: "{ id }" },
+      {
+        action: "outreach.replies.convert_to_task",
+        desc: "Turns a reply into a kanban card in the Needs Input column. Closes the loop back to /tasks.",
+        params: "{ id }",
+      },
+      { action: "outreach.analytics.summary", desc: "Aggregate totals + per-campaign rows. No params." },
+      {
+        action: "outreach.webhook.test",
+        desc: "End-to-end health check. Sends a closed-loop test email from the user's AgentMail inbox to itself, then polls for inbound events for 15s. Use this if the user reports counters aren't ticking.",
+        params: "{ webhook_id }",
+      },
+    ],
+  },
+  {
+    group: "Service config (third-party keys)",
+    items: [
+      { action: "config.status", desc: "Which service keys are configured (gemini/apify/agentmail) with masked previews. Never returns raw keys." },
+      {
+        action: "config.set",
+        desc: "Set one service key. Verified against the service's cheapest auth endpoint before storage; rejected with the real error if the service says no.",
+        params: "{ service: 'gemini'|'apify'|'agentmail', key, skip_test? }",
+      },
+      { action: "config.test", desc: "Re-run the validity test on an already-stored key.", params: "{ service }" },
+      { action: "config.clear", desc: "Remove a stored key.", params: "{ service }" },
+    ],
+  },
 ];
 
 function buildFullGuide(baseUrl: string, apiKey: string): string {
@@ -350,6 +438,121 @@ Pages (landing pages):
                    Every successful update writes an activity-log entry so
                    the human can verify you actually did it.
   page.delete      { slug }
+
+═══════════════════════════════════════════════════════════════
+OUTREACH — ICP to leads to sends to tracked replies
+═══════════════════════════════════════════════════════════════
+
+THE PAYOFF FEATURE. One natural-language sentence → real leads
+scraped from Google Maps → personalised emails → sent from the
+user's own AgentMail inbox → delivered/bounced/clicked/replied
+all tracked live via webhooks.
+
+TWO HARD APPROVAL GATES — NEVER SKIP:
+
+  GATE 1 — before outreach.campaign.run (Apify costs money).
+  GATE 2 — before outreach.emails.send (real emails to real people).
+
+At each gate, activity.log a "decision" entry describing exactly
+what the human is about to approve, then stop and wait for go/no-go.
+
+THE FLOW:
+
+  outreach.preview          { query, max_results? }
+                            Gemini converts a free-text ICP into
+                            { location, searchTerms[], maxResults }.
+                            No side effects. Always call this FIRST
+                            and show the human the plan before create.
+
+  outreach.campaign.create  { name, query, structured_query?, description? }
+                            Persist the campaign. Pass the preview
+                            result as structured_query.
+
+  outreach.campaign.list
+  outreach.campaign.get     { id }
+  outreach.campaign.update  { id, ...patch }
+
+  outreach.campaign.run     { id }
+                            [GATE 1 before this]
+                            Starts the Apify actor ASYNC. Returns
+                            in ~1s. Run takes 30s–3min in the
+                            background. Campaign goes to status
+                            "searching".
+
+  outreach.campaign.sync    { id }
+                            Drives the async run to completion.
+                            Safe no-op if not searching. Call on a
+                            poll loop (every 4–5s) while status ===
+                            "searching". When Apify finishes, this
+                            imports the leads and flips status to
+                            "ready". If Apify failed, marks failed
+                            with the real error message.
+
+  outreach.campaign.delete  { id }
+
+  outreach.leads.list       { campaign_id, limit? }
+  outreach.leads.count      { campaign_id }
+  outreach.leads.add_test   { campaign_id, email, name?, notes? }
+                            CRITICAL FOR DEMOS. Seeds a test lead
+                            with the user's own email so they can
+                            watch send→reply live. Shows as 🧪 TEST.
+                            ALWAYS offer this before the first send
+                            in a new session.
+  outreach.leads.delete     { campaign_id, lead_id }
+
+  outreach.emails.generate_one  { campaign_id, lead_id,
+                                  sender_name?, sender_company?,
+                                  sender_offer? }
+                            PREFERRED draft action. One lead per
+                            call. Loop through leads client-side
+                            so you show live "X of Y" progress and
+                            never hit Netlify's 26s cap. Skips
+                            duplicates (returns { ..., skipped: true }).
+
+  outreach.emails.generate  { campaign_id, sender_name?,
+                              sender_company?, sender_offer? }
+                            Batch variant. Only safe for small
+                            campaigns (<~10 leads). Prefer _one.
+
+  outreach.emails.list      { campaign_id, limit? }
+  outreach.emails.update    { campaign_id, email_id, subject?,
+                              body_text?, body_html? }
+
+  outreach.emails.send      { campaign_id, email_ids? }
+                            [GATE 2 before this]
+                            Sends drafts via AgentMail from the
+                            user's inbox. Rewrites every href
+                            through /t/:token for click tracking.
+                            Omit email_ids to send all drafts in
+                            the campaign.
+
+  outreach.replies.list     { campaign_id?, limit? }
+  outreach.replies.get      { id }
+  outreach.replies.convert_to_task   { id }
+                            Creates a kanban card in Needs Input
+                            with the reply quoted. Closes the loop.
+
+  outreach.analytics.summary
+                            Totals + per-campaign rows.
+
+  outreach.webhook.test     { webhook_id }
+                            End-to-end webhook health check. Sends
+                            a closed-loop email and polls for events
+                            for 15s. Use when counters aren't ticking.
+
+SENDER CONTEXT MATTERS:
+The sender_offer field shapes the hook Gemini writes. One specific
+sentence with an outcome number > vague corporate fluff. The drafts
+are only as good as this input. Examples:
+  bad  : "We help businesses with AI."
+  good : "We cut dental no-shows 40% with AI SMS reminders. Flat
+         $2K/mo, live in 10 days, full handover."
+
+Service config (third-party keys):
+  config.status
+  config.set       { service: 'gemini'|'apify'|'agentmail', key, skip_test? }
+  config.test      { service }
+  config.clear     { service }
 
 ═══════════════════════════════════════════════════════════════
 FIELD SCHEMA — form.create (READ THIS)

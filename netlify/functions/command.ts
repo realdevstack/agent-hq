@@ -1262,6 +1262,89 @@ export const handler: Handler = async (event) => {
         return fail(404, "lead not found");
       }
 
+      case "outreach.emails.generate_one": {
+        // Drafts exactly one email for one lead. Lets the UI loop through
+        // N leads client-side and show a live "Generating X of Y" counter
+        // — instead of one slow server-side batch that blows Netlify's
+        // 26s cap on >~10 leads. Agents can also call this in a loop with
+        // a pause between each for polite pacing.
+        const { campaign_id, lead_id, sender_name, sender_company, sender_offer } = params as Record<string, string>;
+        if (!campaign_id || !lead_id) return fail(400, "campaign_id and lead_id required");
+        const geminiKey = await readServiceKey("gemini");
+        if (!geminiKey) return fail(400, "Gemini key not configured");
+
+        const cs = store(OUTREACH_CAMPAIGNS);
+        const campaign = await readJson<Record<string, unknown>>(cs, campaign_id);
+        if (!campaign) return fail(404, "campaign not found");
+
+        // Find the lead (iterate — scale here is in the hundreds).
+        const leadsStore = store(OUTREACH_LEADS);
+        const { blobs } = await leadsStore.list({ prefix: `${campaign_id}/` });
+        let lead: Record<string, unknown> | null = null;
+        for (const b of blobs) {
+          const row = await readJson<Record<string, unknown>>(leadsStore, b.key);
+          if ((row as { id?: string } | null)?.id === lead_id) {
+            lead = row;
+            break;
+          }
+        }
+        if (!lead) return fail(404, "lead not found");
+        if (!lead.email) return fail(400, "lead has no email address — cannot draft");
+
+        // Check if a draft already exists for this lead and short-circuit.
+        const es = store(OUTREACH_EMAILS);
+        const existingEmails = await listJson<{ id: string; lead_id: string }>(es, `${campaign_id}/`);
+        const existing = existingEmails.find((e) => e.lead_id === lead_id);
+        if (existing) return ok({ ...existing, skipped: true });
+
+        try {
+          const draft = await generateEmailDraft(
+            geminiKey,
+            {
+              name: lead.name as string | undefined,
+              company: lead.company as string | undefined,
+              website: lead.website as string | undefined,
+              category: lead.category as string | undefined,
+              address: lead.address as string | undefined,
+              notes: lead.notes as string | undefined,
+            },
+            {
+              sender_name: sender_name as string | undefined,
+              sender_company: sender_company as string | undefined,
+              sender_offer: sender_offer as string | undefined,
+              campaign_query: campaign.query as string,
+            },
+          );
+          const emailId = nanoid(12);
+          const createdAt = new Date().toISOString();
+          const record = {
+            id: emailId,
+            campaign_id,
+            lead_id,
+            to_email: lead.email,
+            to_name: lead.name,
+            subject: draft.subject,
+            body_text: draft.body_text,
+            body_html: draft.body_html,
+            status: "drafted",
+            created_at: createdAt,
+            updated_at: createdAt,
+          };
+          await writeJson(es, `${campaign_id}/${createdAt}-${emailId}`, record);
+          // Increment campaign emails_generated. Race-safe enough: this
+          // is called serially from one client (the UI loop), not from
+          // concurrent webhooks.
+          await writeJson(cs, campaign_id, {
+            ...campaign,
+            emails_generated: (campaign.emails_generated as number ?? 0) + 1,
+            updated_at: new Date().toISOString(),
+          });
+          return ok(record);
+        } catch (err) {
+          return fail(500, err instanceof Error ? err.message : "Draft failed");
+        }
+      }
+
       case "outreach.emails.generate": {
         // Gemini drafts a per-lead email. We write one email record per
         // lead under OUTREACH_EMAILS and bump the campaign's emails_generated.

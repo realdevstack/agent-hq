@@ -126,9 +126,15 @@ Gate 2 (real emails to real people). Everything else is autonomous.
   params: `{ campaign_id, lead_id }`
 
 ### Emails
-- `outreach.emails.generate` — Gemini drafts one email per lead with
-  an email address. Narrate the sender context well or the drafts will
-  be generic. Writes one draft per lead (status=`drafted`).
+- `outreach.emails.generate_one` — **preferred.** Drafts exactly one
+  email for one lead. Call in a loop, narrating progress in the activity
+  log each time. Returns `{ ..., skipped: true }` if that lead already
+  has a draft. Keeps every call well under Netlify's 26s function cap
+  regardless of campaign size.
+  params: `{ campaign_id, lead_id, sender_name?, sender_company?, sender_offer? }`
+- `outreach.emails.generate` — batch variant that drafts for every lead
+  with an email. Safe for small campaigns (<10 leads). For larger ones,
+  prefer `generate_one` in a loop.
   params: `{ campaign_id, sender_name?, sender_company?, sender_offer? }`
 - `outreach.emails.list` — all drafts/sends for a campaign.
   params: `{ campaign_id, limit? }`
@@ -281,10 +287,17 @@ curl -X POST $AGENT_HQ_URL/api/command ... \
 curl -X POST $AGENT_HQ_URL/api/command ... \
   -d '{"action":"outreach.leads.add_test","params":{"campaign_id":"abc123xyz","email":"mani@vertical.ai","name":"Mani (test)"}}'
 
-# 5. Generate drafts
-curl -X POST $AGENT_HQ_URL/api/command ... \
-  -d '{"action":"outreach.emails.generate","params":{"campaign_id":"abc123xyz","sender_name":"Mani","sender_company":"Vertical AI","sender_offer":"We cut dental no-shows by 40% with AI SMS reminders. 2-week pilot, flat fee."}}'
-# → { generated: 29, errors: [] }
+# 5. Generate drafts — per-lead loop with live progress narration
+LEADS=$(curl -s -X POST $AGENT_HQ_URL/api/command ... \
+  -d '{"action":"outreach.leads.list","params":{"campaign_id":"abc123xyz"}}' | jq -r '.data[] | select(.email != null) | .id')
+TOTAL=$(echo "$LEADS" | wc -l); N=0
+for LEAD_ID in $LEADS; do
+  N=$((N+1))
+  curl -X POST $AGENT_HQ_URL/api/command ... \
+    -d "{\"action\":\"outreach.emails.generate_one\",\"params\":{\"campaign_id\":\"abc123xyz\",\"lead_id\":\"$LEAD_ID\",\"sender_name\":\"Mani\",\"sender_company\":\"Vertical AI\",\"sender_offer\":\"We cut dental no-shows 40% with AI SMS reminders. 2-week pilot, flat fee.\"}}"
+  curl -X POST $AGENT_HQ_URL/api/command ... \
+    -d "{\"action\":\"activity.log\",\"params\":{\"category\":\"content\",\"summary\":\"Drafted email $N of $TOTAL\"}}"
+done
 
 # ── GATE 2 ── log decision, ask human to approve real sends ──
 

@@ -18,6 +18,11 @@ import {
   AlertCircle,
   FlaskConical,
   CheckCircle2,
+  ExternalLink,
+  Star,
+  Phone,
+  Globe,
+  X,
 } from "lucide-react";
 import PageHeader from "@/components/PageHeader";
 import GlassCard from "@/components/GlassCard";
@@ -57,6 +62,10 @@ type Lead = {
   address: string | null;
   category: string | null;
   rating: number | null;
+  reviews_count: number | null;
+  maps_url: string | null;
+  notes?: string | null;
+  raw?: Record<string, unknown>;
   status: string;
   is_test: boolean;
   created_at: string;
@@ -96,6 +105,9 @@ export default function CampaignDetail() {
   const [testModalOpen, setTestModalOpen] = useState(false);
   const [generateModalOpen, setGenerateModalOpen] = useState(false);
   const [busyAction, setBusyAction] = useState<"run" | "generate" | "send" | null>(null);
+  const [leadDetail, setLeadDetail] = useState<Lead | null>(null);
+  const [emailDetail, setEmailDetail] = useState<EmailRow | null>(null);
+  const [generateProgress, setGenerateProgress] = useState<{ done: number; total: number } | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -202,18 +214,33 @@ export default function CampaignDetail() {
     }
   }
 
+  // Derive counters from the emails array — race-free unlike the cached
+  // counters on the campaign record (which can lose increments when
+  // AgentMail fires sent + delivered webhooks in the same millisecond).
+  // Delivered/clicked/replied are cumulative — once an email is "clicked"
+  // it was also "delivered", etc.
   const counters = useMemo(() => {
-    if (!campaign) return null;
+    const drafts = emails.filter((e) => e.status === "drafted").length;
+    const postSend = emails.filter((e) => e.status !== "drafted");
+    const delivered = emails.filter((e) =>
+      ["delivered", "clicked", "replied"].includes(e.status),
+    ).length;
+    const clicked = emails.filter(
+      (e) => e.status === "clicked" || e.status === "replied" || (e.click_count ?? 0) > 0,
+    ).length;
+    const replied = emails.filter((e) => e.status === "replied").length;
+    const bounced = emails.filter((e) => e.status === "bounced" || e.status === "complained" || e.status === "failed").length;
     return {
-      leads: campaign.leads_imported ?? 0,
-      drafts: emails.filter((e) => e.status === "drafted").length,
-      sent: campaign.emails_sent ?? 0,
-      delivered: campaign.emails_delivered ?? 0,
-      bounced: campaign.emails_bounced ?? 0,
-      clicked: campaign.emails_clicked ?? 0,
-      replied: campaign.emails_replied ?? 0,
+      leads: leads.length,
+      leadsWithEmail: leads.filter((l) => l.email).length,
+      drafts,
+      sent: postSend.length,
+      delivered,
+      bounced,
+      clicked,
+      replied,
     };
-  }, [campaign, emails]);
+  }, [emails, leads]);
 
   if (!campaign) {
     return (
@@ -430,38 +457,83 @@ export default function CampaignDetail() {
             No leads yet. Click <span className="text-white font-semibold">Run Apify scrape</span> above, or add a test lead with your own email.
           </div>
         ) : (
-          <div className="space-y-1">
-            {leads.map((l) => (
-              <div key={l.id} className="flex items-center gap-3 rounded-lg bg-white/[0.02] hover:bg-white/[0.04] border border-white/[0.06] px-3 py-2 transition">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-sm font-medium text-white truncate">{l.name}</span>
-                    {l.is_test && (
-                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-accent/20 border border-accent/40 text-accent text-[9px] font-bold tracking-wider uppercase">
-                        <Beaker size={9} /> Test
+          <>
+            <p className="text-[11px] text-white/45 mb-2 font-mono">
+              {counters.leadsWithEmail} of {counters.leads} leads have email addresses.
+              {counters.leads - counters.leadsWithEmail > 0 && ` ${counters.leads - counters.leadsWithEmail} will be skipped at generate time.`}
+            </p>
+            <div className="space-y-1">
+              {leads.map((l) => (
+                <div key={l.id} className="group flex items-center gap-3 rounded-lg bg-white/[0.02] hover:bg-white/[0.05] border border-white/[0.06] hover:border-white/[0.12] px-3 py-2 transition cursor-pointer"
+                     onClick={() => setLeadDetail(l)}>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-sm font-medium text-white truncate">{l.name}</span>
+                      {l.is_test && (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-accent/20 border border-accent/40 text-accent text-[9px] font-bold tracking-wider uppercase">
+                          <Beaker size={9} /> Test
+                        </span>
+                      )}
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white/5 text-white/45">
+                        {l.status}
                       </span>
-                    )}
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white/5 text-white/45">
-                      {l.status}
-                    </span>
+                      {!l.email && !l.is_test && (
+                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-300">
+                          no email
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-3 text-[11px] text-white/50 font-mono mt-0.5 flex-wrap">
+                      {l.email && <span className="text-white/70">{l.email}</span>}
+                      {l.category && <span>· {l.category}</span>}
+                      {l.rating !== null && <span>· <Star size={9} className="inline -mt-0.5" /> {l.rating}{l.reviews_count ? ` (${l.reviews_count})` : ""}</span>}
+                      {l.address && <span className="truncate max-w-[220px]">· {l.address}</span>}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-3 text-[11px] text-white/50 font-mono mt-0.5">
-                    {l.email && <span>{l.email}</span>}
-                    {l.category && <span>· {l.category}</span>}
-                    {l.rating !== null && <span>· ★ {l.rating}</span>}
-                    {l.address && <span className="truncate max-w-xs">· {l.address}</span>}
+                  <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+                    {l.website && (
+                      <a
+                        href={l.website}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="w-8 h-8 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 hover:text-white flex items-center justify-center transition"
+                        title={l.website}
+                      >
+                        <Globe size={12} />
+                      </a>
+                    )}
+                    {l.maps_url && (
+                      <a
+                        href={l.maps_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="w-8 h-8 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 hover:text-white flex items-center justify-center transition"
+                        title="View on Google Maps"
+                      >
+                        <MapPin size={12} />
+                      </a>
+                    )}
+                    {l.phone && (
+                      <a
+                        href={`tel:${l.phone}`}
+                        className="w-8 h-8 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 hover:text-white flex items-center justify-center transition"
+                        title={l.phone}
+                      >
+                        <Phone size={12} />
+                      </a>
+                    )}
+                    <button
+                      onClick={() => removeLead(l.id)}
+                      className="w-8 h-8 rounded-md bg-red-500/10 hover:bg-red-500/20 border border-red-500/25 text-red-300 flex items-center justify-center transition"
+                      title="Remove"
+                    >
+                      <Trash2 size={12} />
+                    </button>
                   </div>
                 </div>
-                <button
-                  onClick={() => removeLead(l.id)}
-                  className="shrink-0 w-8 h-8 rounded-md bg-red-500/10 hover:bg-red-500/20 border border-red-500/25 text-red-300 flex items-center justify-center transition"
-                  title="Remove"
-                >
-                  <Trash2 size={12} />
-                </button>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          </>
         )}
       </GlassCard>
 
@@ -474,27 +546,55 @@ export default function CampaignDetail() {
         </div>
         {emails.length === 0 ? (
           <div className="text-center py-10 text-white/50 text-sm">
-            No drafts yet. Click <span className="text-white font-semibold">Generate emails</span> after leads are in.
+            {generateProgress ? (
+              <div className="flex items-center justify-center gap-3 text-primary">
+                <Loader2 size={14} className="animate-spin" />
+                Generating email {generateProgress.done + 1} of {generateProgress.total}…
+              </div>
+            ) : (
+              <>No drafts yet. Click <span className="text-white font-semibold">Generate emails</span> after leads are in.</>
+            )}
           </div>
         ) : (
-          <div className="space-y-2">
-            {emails.map((e) => (
-              <div key={e.id} className="rounded-lg bg-white/[0.02] border border-white/[0.06] p-3">
-                <div className="flex items-center gap-2 flex-wrap mb-1">
-                  <span className="text-xs text-white/50 font-mono">to</span>
-                  <span className="text-sm text-white font-medium truncate">{e.to_email}</span>
-                  <StatusPill status={e.status} />
-                  {(e.click_count ?? 0) > 0 && (
-                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-accent/15 border border-accent/30 text-accent text-[10px] font-bold">
-                      <MousePointerClick size={10} /> {e.click_count}
-                    </span>
-                  )}
+          <>
+            {generateProgress && generateProgress.done < generateProgress.total && (
+              <div className="mb-3 flex items-center gap-3 rounded-lg bg-primary/10 border border-primary/30 px-3 py-2">
+                <Loader2 size={14} className="animate-spin text-primary" />
+                <span className="text-xs text-primary font-mono">
+                  Generating {generateProgress.done + 1} of {generateProgress.total}…
+                </span>
+                <div className="flex-1 h-1.5 rounded-full bg-white/5 overflow-hidden">
+                  <div
+                    className="h-full bg-primary transition-all duration-500"
+                    style={{ width: `${Math.round((generateProgress.done / generateProgress.total) * 100)}%` }}
+                  />
                 </div>
-                <p className="text-sm font-semibold text-white mb-0.5">{e.subject}</p>
-                <p className="text-xs text-white/55 line-clamp-2 whitespace-pre-wrap">{e.body_text}</p>
               </div>
-            ))}
-          </div>
+            )}
+            <div className="space-y-2">
+              {emails.map((e) => (
+                <div
+                  key={e.id}
+                  onClick={() => setEmailDetail(e)}
+                  className="rounded-lg bg-white/[0.02] hover:bg-white/[0.05] border border-white/[0.06] hover:border-white/[0.12] p-3 cursor-pointer transition"
+                >
+                  <div className="flex items-center gap-2 flex-wrap mb-1">
+                    <span className="text-xs text-white/50 font-mono">to</span>
+                    <span className="text-sm text-white font-medium truncate">{e.to_email}</span>
+                    <StatusPill status={e.status} />
+                    {(e.click_count ?? 0) > 0 && (
+                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-accent/15 border border-accent/30 text-accent text-[10px] font-bold">
+                        <MousePointerClick size={10} /> {e.click_count}
+                      </span>
+                    )}
+                    <ExternalLink size={11} className="ml-auto text-white/30" />
+                  </div>
+                  <p className="text-sm font-semibold text-white mb-0.5">{e.subject}</p>
+                  <p className="text-xs text-white/55 line-clamp-2 whitespace-pre-wrap">{e.body_text}</p>
+                </div>
+              ))}
+            </div>
+          </>
         )}
       </GlassCard>
 
@@ -506,15 +606,25 @@ export default function CampaignDetail() {
         onAdded={() => void refresh()}
       />
 
-      {/* Generate emails modal */}
+      {/* Generate emails modal — per-lead with live progress */}
       <GenerateEmailsModal
         open={generateModalOpen}
         onClose={() => setGenerateModalOpen(false)}
         campaignId={campaign.id}
+        leads={leads}
+        existingEmails={emails}
         setBusyAction={setBusyAction}
         onComplete={() => void refresh()}
         setErr={setErr}
+        progress={generateProgress}
+        setProgress={setGenerateProgress}
       />
+
+      {/* Lead detail */}
+      {leadDetail && <LeadDetailModal lead={leadDetail} onClose={() => setLeadDetail(null)} />}
+
+      {/* Email detail */}
+      {emailDetail && <EmailDetailModal email={emailDetail} onClose={() => setEmailDetail(null)} />}
     </>
   );
 }
@@ -650,44 +760,76 @@ function GenerateEmailsModal({
   open,
   onClose,
   campaignId,
+  leads,
+  existingEmails,
   setBusyAction,
   onComplete,
   setErr,
+  progress,
+  setProgress,
 }: {
   open: boolean;
   onClose: () => void;
   campaignId: string;
+  leads: Lead[];
+  existingEmails: EmailRow[];
   setBusyAction: (v: "run" | "generate" | "send" | null) => void;
   onComplete: () => void;
   setErr: (s: string | null) => void;
+  progress: { done: number; total: number } | null;
+  setProgress: (p: { done: number; total: number } | null) => void;
 }) {
   const [senderName, setSenderName] = useState("");
   const [senderCompany, setSenderCompany] = useState("");
   const [senderOffer, setSenderOffer] = useState("");
   const [busy, setBusy] = useState(false);
+  const [localErr, setLocalErr] = useState<string | null>(null);
+
+  // Compute eligible leads each render so the user sees a live count.
+  const existingLeadIds = new Set(existingEmails.map((e) => e.lead_id));
+  const eligibleLeads = leads.filter((l) => l.email && !existingLeadIds.has(l.id));
+  const skippedNoEmail = leads.filter((l) => !l.email).length;
+  const skippedAlreadyDrafted = leads.filter((l) => l.email && existingLeadIds.has(l.id)).length;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (!senderOffer.trim() || eligibleLeads.length === 0) return;
     setBusy(true);
     setBusyAction("generate");
+    setLocalErr(null);
     setErr(null);
+    setProgress({ done: 0, total: eligibleLeads.length });
+    let done = 0;
+    const errors: Array<{ lead_id: string; error: string }> = [];
     try {
-      const result = await call<{ generated: number; errors: Array<{ lead_id: string; error: string }> }>(
-        "outreach.emails.generate",
-        {
-          campaign_id: campaignId,
-          sender_name: senderName,
-          sender_company: senderCompany,
-          sender_offer: senderOffer,
-        },
-      );
-      if (result.errors.length > 0 && result.generated === 0) {
-        setErr(`Drafting failed for all leads: ${result.errors[0]?.error ?? "unknown"}`);
+      for (const lead of eligibleLeads) {
+        try {
+          await call("outreach.emails.generate_one", {
+            campaign_id: campaignId,
+            lead_id: lead.id,
+            sender_name: senderName,
+            sender_company: senderCompany,
+            sender_offer: senderOffer,
+          });
+        } catch (err) {
+          errors.push({ lead_id: lead.id, error: err instanceof Error ? err.message : "unknown" });
+        }
+        done++;
+        setProgress({ done, total: eligibleLeads.length });
+        // Refresh the campaign detail view every 3 drafts so the user
+        // watches drafts appear in real time.
+        if (done % 3 === 0 || done === eligibleLeads.length) onComplete();
       }
-      onComplete();
-      onClose();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "Generate failed");
+      if (errors.length > 0 && done - errors.length === 0) {
+        setLocalErr(`All ${errors.length} drafts failed. First error: ${errors[0]?.error ?? "unknown"}`);
+        setErr(errors[0]?.error ?? "Drafts failed");
+      } else {
+        // Close modal on success (full or partial).
+        onClose();
+        // Clear progress after a short beat so the campaign page can
+        // celebrate the final count.
+        setTimeout(() => setProgress(null), 1200);
+      }
     } finally {
       setBusy(false);
       setBusyAction(null);
@@ -695,8 +837,33 @@ function GenerateEmailsModal({
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="Generate emails" description="Gemini writes a personalised first-touch for every lead with an email. About 8 seconds for 50 leads." maxWidth="max-w-lg">
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Generate emails"
+      description="Gemini drafts one personalised first-touch per lead with an email. Progress updates live."
+      maxWidth="max-w-lg"
+    >
       <form onSubmit={submit} className="space-y-4">
+        <div className="rounded-lg bg-white/[0.03] border border-white/[0.08] p-3 space-y-1">
+          <div className="flex justify-between text-sm">
+            <span className="text-white/70">Leads ready to draft</span>
+            <span className="font-mono font-bold text-primary">{eligibleLeads.length}</span>
+          </div>
+          {skippedNoEmail > 0 && (
+            <div className="flex justify-between text-xs">
+              <span className="text-amber-300/80">Leads without an email (skipped)</span>
+              <span className="font-mono text-amber-300">{skippedNoEmail}</span>
+            </div>
+          )}
+          {skippedAlreadyDrafted > 0 && (
+            <div className="flex justify-between text-xs">
+              <span className="text-white/50">Already drafted (skipped)</span>
+              <span className="font-mono text-white/50">{skippedAlreadyDrafted}</span>
+            </div>
+          )}
+        </div>
+
         <FormField label="Your name" hint="Signed at the bottom of the email.">
           <TextInput value={senderName} onChange={(e) => setSenderName(e.target.value)} placeholder="e.g. Mani" autoFocus />
         </FormField>
@@ -706,16 +873,165 @@ function GenerateEmailsModal({
         <FormField label="Value / offer" hint="One sentence describing what you're offering. Gemini shapes the hook around this." required>
           <TextArea value={senderOffer} onChange={(e) => setSenderOffer(e.target.value)} rows={3} placeholder="e.g. We ship AI voice agents for SMBs in 30 days, flat-fee, no retainer." required />
         </FormField>
+
+        {progress && (
+          <div className="rounded-lg bg-primary/10 border border-primary/30 px-3 py-2">
+            <div className="flex items-center gap-2 text-xs text-primary mb-1.5">
+              <Loader2 size={12} className="animate-spin" />
+              <span className="font-mono">
+                Drafting {progress.done} of {progress.total}…
+              </span>
+            </div>
+            <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
+              <div
+                className="h-full bg-primary transition-all duration-300"
+                style={{ width: `${Math.round((progress.done / Math.max(1, progress.total)) * 100)}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {localErr && (
+          <div className="rounded-lg bg-red-500/15 border border-red-500/40 px-4 py-2 text-sm text-red-200">{localErr}</div>
+        )}
+
         <div className="flex items-center gap-3">
-          <PrimaryButton type="submit" loading={busy} disabled={!senderOffer.trim() || busy}>
-            <Sparkles size={14} /> Generate drafts
+          <PrimaryButton type="submit" loading={busy} disabled={!senderOffer.trim() || busy || eligibleLeads.length === 0}>
+            <Sparkles size={14} /> Generate {eligibleLeads.length} draft{eligibleLeads.length === 1 ? "" : "s"}
           </PrimaryButton>
-          <button type="button" onClick={onClose} className="px-4 py-3 text-sm text-white/60 hover:text-white font-medium">Cancel</button>
+          <button type="button" onClick={onClose} className="px-4 py-3 text-sm text-white/60 hover:text-white font-medium">
+            {busy ? "Close (keeps running)" : "Cancel"}
+          </button>
         </div>
       </form>
     </Modal>
   );
 }
 
-// Unused import guard — keeps tree-shaker from complaining during early dev.
+function LeadDetailModal({ lead, onClose }: { lead: Lead; onClose: () => void }) {
+  return (
+    <Modal
+      open={true}
+      onClose={onClose}
+      title={lead.name}
+      description={lead.is_test ? "🧪 Test lead — seeded by you for the send→reply demo." : "Lead scraped by Apify from Google Maps."}
+      maxWidth="max-w-2xl"
+    >
+      <div className="space-y-4">
+        {/* Contact block */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <DetailRow label="Email" value={lead.email} mono />
+          <DetailRow label="Phone" value={lead.phone} mono href={lead.phone ? `tel:${lead.phone}` : null} />
+          <DetailRow label="Website" value={lead.website} href={lead.website} external />
+          <DetailRow label="Google Maps" value={lead.maps_url ? "View on Google Maps" : null} href={lead.maps_url} external />
+        </div>
+
+        {/* Metadata block */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <DetailRow label="Category" value={lead.category} />
+          <DetailRow label="Rating" value={lead.rating !== null ? `★ ${lead.rating}${lead.reviews_count ? ` (${lead.reviews_count} reviews)` : ""}` : null} />
+          <DetailRow label="Address" value={lead.address} full />
+        </div>
+
+        {lead.notes && <DetailRow label="Notes" value={lead.notes} full />}
+
+        {/* Raw Apify data — collapsed by default */}
+        {lead.raw && Object.keys(lead.raw).length > 0 && (
+          <details className="rounded-lg bg-black/30 border border-white/[0.06]">
+            <summary className="cursor-pointer px-3 py-2 text-xs text-white/60 font-mono hover:text-white/85 transition">
+              Raw Apify data ({Object.keys(lead.raw).length} fields)
+            </summary>
+            <pre className="px-3 pb-3 text-[10px] text-white/70 overflow-x-auto max-h-80 font-mono">
+              {JSON.stringify(lead.raw, null, 2)}
+            </pre>
+          </details>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+function EmailDetailModal({ email, onClose }: { email: EmailRow; onClose: () => void }) {
+  return (
+    <Modal
+      open={true}
+      onClose={onClose}
+      title={email.subject || "(no subject)"}
+      description={`to ${email.to_email}`}
+      maxWidth="max-w-2xl"
+    >
+      <div className="space-y-4">
+        <div className="flex items-center gap-2 flex-wrap">
+          <StatusPill status={email.status} />
+          {(email.click_count ?? 0) > 0 && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-accent/15 border border-accent/30 text-accent text-xs font-bold">
+              <MousePointerClick size={11} /> {email.click_count} click{email.click_count === 1 ? "" : "s"}
+            </span>
+          )}
+          <span className="text-[11px] text-white/40 font-mono ml-auto">
+            Created {new Date(email.created_at).toLocaleString()}
+          </span>
+        </div>
+
+        <div className="rounded-lg bg-black/30 border border-white/[0.06] p-4 max-h-[60vh] overflow-y-auto">
+          {email.body_html ? (
+            <div
+              className="prose prose-invert prose-sm max-w-none text-white/85 leading-relaxed"
+              dangerouslySetInnerHTML={{ __html: email.body_html }}
+            />
+          ) : (
+            <pre className="whitespace-pre-wrap font-sans text-sm text-white/85 leading-relaxed">{email.body_text}</pre>
+          )}
+        </div>
+
+        <details className="rounded-lg bg-black/20 border border-white/[0.04]">
+          <summary className="cursor-pointer px-3 py-2 text-xs text-white/50 font-mono hover:text-white/80 transition">
+            Plain text version
+          </summary>
+          <pre className="px-3 pb-3 text-[11px] text-white/60 whitespace-pre-wrap font-mono">{email.body_text}</pre>
+        </details>
+      </div>
+    </Modal>
+  );
+}
+
+function DetailRow({
+  label,
+  value,
+  mono,
+  href,
+  external,
+  full,
+}: {
+  label: string;
+  value: string | null;
+  mono?: boolean;
+  href?: string | null;
+  external?: boolean;
+  full?: boolean;
+}) {
+  if (!value) return null;
+  const content = href ? (
+    <a
+      href={href}
+      target={external ? "_blank" : undefined}
+      rel={external ? "noopener noreferrer" : undefined}
+      className="text-primary hover:text-white transition inline-flex items-center gap-1"
+    >
+      <span className="truncate">{value}</span>
+      {external && <ExternalLink size={11} className="shrink-0" />}
+    </a>
+  ) : (
+    <span className="text-white/85 truncate">{value}</span>
+  );
+  return (
+    <div className={`${full ? "col-span-full" : ""} rounded-lg bg-white/[0.02] border border-white/[0.06] px-3 py-2`}>
+      <div className="text-[10px] uppercase tracking-widest text-white/45 font-bold mb-0.5">{label}</div>
+      <div className={`text-sm ${mono ? "font-mono" : ""} truncate`}>{content}</div>
+    </div>
+  );
+}
+
+// Unused import guards
 void Check;
+void X;
