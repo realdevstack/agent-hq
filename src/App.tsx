@@ -10,6 +10,7 @@ import Webhooks from "@/pages/Webhooks";
 import Integrations from "@/pages/Integrations";
 import Voice from "@/pages/Voice";
 import VoiceInvitationBanner from "@/components/VoiceInvitationBanner";
+import LiveAgentFeed from "@/components/LiveAgentFeed";
 import Pages from "@/pages/Pages";
 import PublicForm from "@/pages/PublicForm";
 import Settings from "@/pages/Settings";
@@ -37,6 +38,7 @@ function Shell() {
     <div className="flex min-h-screen">
       <Sidebar />
       <VoiceInvitationBanner />
+      <LiveAgentFeed />
       <main className="flex-1 px-10 py-8 max-w-[1600px] mx-auto w-full">
         <Routes>
           <Route path="/" element={<Office />} />

@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import PageHeader from "@/components/PageHeader";
 import GlassCard from "@/components/GlassCard";
+import AnimatedNumber from "@/components/AnimatedNumber";
 import { call } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
 
@@ -184,7 +185,9 @@ function StatTile({ label, value, icon, tint }: { label: string; value: number; 
         {icon}
         <span className="text-[10px] uppercase tracking-widest font-bold">{label}</span>
       </div>
-      <div className="font-display text-2xl font-black text-white tabular-nums">{value.toLocaleString()}</div>
+      <div className="font-display text-2xl font-black text-white">
+        <AnimatedNumber value={value} />
+      </div>
     </div>
   );
 }

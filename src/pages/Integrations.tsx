@@ -139,13 +139,18 @@ const ACTIONS: ActionGroup[] = [
       },
       { action: "outreach.leads.delete", desc: "Remove one lead.", params: "{ campaign_id, lead_id }" },
       {
+        action: "outreach.emails.create",
+        desc: "Agent-authored draft. You write the subject + body yourself (no Gemini call). Same downstream pipeline as Gemini drafts — link tracking, webhook updates, reply correlation. Dedupes on (lead, step). PREFERRED when the calling agent is already a strong writer.",
+        params: "{ campaign_id, lead_id, subject, body_text, body_html?, sender_name?, sequence_position?, sequence_total?, framework? }",
+      },
+      {
         action: "outreach.emails.generate_one",
-        desc: "Drafts exactly one email for one lead. PREFERRED for agent use — call this in a loop so you stay well under Netlify's 26s function cap and show live progress. Skips leads that already have drafts. Returns { ..., skipped: true } on duplicate.",
-        params: "{ campaign_id, lead_id, sender_name?, sender_company?, sender_offer? }",
+        desc: "Gemini drafts exactly one email for one (lead, step) combination. Supports frameworks: one-off | pas | aida | sdr. When drafting a sequence, loop by STEP first, then by lead, so the handler can reference previous steps for continuity. Returns { ..., skipped: true } if a draft already exists for that (lead, step).",
+        params: "{ campaign_id, lead_id, sender_name?, sender_company?, sender_offer?, framework?, step?, total_steps? }",
       },
       {
         action: "outreach.emails.generate",
-        desc: "Batch variant — drafts for every lead that has an email. Can timeout for large campaigns. Prefer generate_one in a loop for >10 leads.",
+        desc: "Batch one-off variant — drafts a single email per lead. No framework support. Can timeout for large campaigns. Prefer generate_one in a loop for anything real.",
         params: "{ campaign_id, sender_name?, sender_company?, sender_offer? }",
       },
       { action: "outreach.emails.list", desc: "All drafts/sends for a campaign.", params: "{ campaign_id, limit? }" },
@@ -156,8 +161,8 @@ const ACTIONS: ActionGroup[] = [
       },
       {
         action: "outreach.emails.send",
-        desc: "Fires drafted emails via AgentMail from the user's own inbox. Rewrites every outbound link through /t/:token for click tracking. ALWAYS get explicit human approval (GATE 2) before calling this — these are real emails to real people.",
-        params: "{ campaign_id, email_ids? }",
+        desc: "Fires drafted emails via AgentMail from the user's own inbox. Rewrites every outbound link through /t/:token for click tracking. Pass sequence_position to send only that step; leads who already replied to an earlier step are auto-skipped. ALWAYS get explicit human approval (GATE 2) before each step — these are real emails to real people.",
+        params: "{ campaign_id, email_ids?, sequence_position? }",
       },
       { action: "outreach.replies.list", desc: "Inbound replies. Filter by campaign id if provided.", params: "{ campaign_id?, limit? }" },
       { action: "outreach.replies.get", desc: "One reply's full content.", params: "{ id }" },
@@ -515,31 +520,62 @@ THE FLOW:
                             ~40–70% of emails. Fails open.
   outreach.leads.delete     { campaign_id, lead_id }
 
+  outreach.emails.create    { campaign_id, lead_id, subject,
+                              body_text, body_html?, sender_name?,
+                              sequence_position?, sequence_total?,
+                              framework? }
+                            YOU write the draft. No Gemini call.
+                            PREFERRED when you're already a strong
+                            writer in context. Same downstream
+                            pipeline — link tracking, webhook
+                            status, replies all work identically.
+                            Dedupes on (lead, step).
+
   outreach.emails.generate_one  { campaign_id, lead_id,
                                   sender_name?, sender_company?,
-                                  sender_offer? }
-                            PREFERRED draft action. One lead per
-                            call. Loop through leads client-side
-                            so you show live "X of Y" progress and
-                            never hit Netlify's 26s cap. Skips
-                            duplicates (returns { ..., skipped: true }).
+                                  sender_offer?, framework?,
+                                  step?, total_steps? }
+                            Gemini drafts one email for one
+                            (lead, step). Supports frameworks:
+                            one-off (default) | pas | aida | sdr.
+                            When drafting a 3-step sequence, loop
+                            BY STEP first, THEN by lead, so the
+                            server can fetch prior steps for
+                            continuity. Skips duplicates.
 
   outreach.emails.generate  { campaign_id, sender_name?,
                               sender_company?, sender_offer? }
-                            Batch variant. Only safe for small
-                            campaigns (<~10 leads). Prefer _one.
+                            Batch one-off variant. Unsafe for >10
+                            leads (Netlify timeout). Prefer _one.
 
   outreach.emails.list      { campaign_id, limit? }
   outreach.emails.update    { campaign_id, email_id, subject?,
                               body_text?, body_html? }
 
-  outreach.emails.send      { campaign_id, email_ids? }
-                            [GATE 2 before this]
-                            Sends drafts via AgentMail from the
-                            user's inbox. Rewrites every href
-                            through /t/:token for click tracking.
-                            Omit email_ids to send all drafts in
-                            the campaign.
+  outreach.emails.send      { campaign_id, email_ids?,
+                              sequence_position? }
+                            [GATE 2 before EACH step]
+                            Sends drafts via AgentMail. Rewrites
+                            every href through /t/:token for click
+                            tracking. Pass sequence_position to
+                            send only that step; leads who already
+                            replied to an earlier step are
+                            auto-skipped. Omit everything to send
+                            all drafts (legacy).
+
+FRAMEWORKS (3-email sequences):
+  pas  — Problem → Agitate → Solution.
+         Step 1: name the pain, no pitch.
+         Step 2: agitate the cost of leaving it unaddressed.
+         Step 3: propose solution, clear CTA.
+  aida — Attention → Interest → Desire + Action.
+         Step 1: unexpected hook.
+         Step 2: proof / insight.
+         Step 3: low-friction CTA.
+  sdr  — Direct → Value-add → Breakup.
+         Step 1: 2-3 line direct pitch.
+         Step 2: free resource / insight, "thought this might help".
+         Step 3: graceful off-ramp, no hard sell.
 
   outreach.replies.list     { campaign_id?, limit? }
   outreach.replies.get      { id }

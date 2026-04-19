@@ -132,26 +132,66 @@ Gate 2 (real emails to real people). Everything else is autonomous.
 - `outreach.leads.delete` — removes one lead.
   params: `{ campaign_id, lead_id }`
 
-### Emails
-- `outreach.emails.generate_one` — **preferred.** Drafts exactly one
-  email for one lead. Call in a loop, narrating progress in the activity
-  log each time. Returns `{ ..., skipped: true }` if that lead already
-  has a draft. Keeps every call well under Netlify's 26s function cap
-  regardless of campaign size.
-  params: `{ campaign_id, lead_id, sender_name?, sender_company?, sender_offer? }`
-- `outreach.emails.generate` — batch variant that drafts for every lead
-  with an email. Safe for small campaigns (<10 leads). For larger ones,
-  prefer `generate_one` in a loop.
+### Emails — two paths, pick based on who's writing
+
+**Path A — You (the agent) write the draft yourself (PREFERRED when you're a capable writer).**
+- `outreach.emails.create` — inject a draft straight into the campaign.
+  No Gemini call. Same downstream pipeline: link tracking, webhook
+  status updates, reply correlation. Dedupes on (lead_id, step). Use
+  this when you already have strong writing in-context and don't need
+  a second model to re-write it.
+  params: `{ campaign_id, lead_id, subject, body_text, body_html?, sender_name?, sequence_position?, sequence_total?, framework? }`
+
+**Path B — Hand off drafting to Gemini.**
+- `outreach.emails.generate_one` — Gemini drafts exactly one email for
+  one (lead, step) combination. Call in a loop. Keeps every call well
+  under Netlify's 26s cap regardless of campaign size. Returns
+  `{ ..., skipped: true }` if that (lead, step) already has a draft.
+  Supports the same framework + step params as Path A.
+  params: `{ campaign_id, lead_id, sender_name?, sender_company?, sender_offer?, framework?, step?, total_steps? }`
+- `outreach.emails.generate` — batch variant that drafts a one-off email
+  for every lead with an email. No framework support (always one-off).
+  Safe only for small campaigns (<10 leads). Prefer `generate_one` for
+  anything real.
   params: `{ campaign_id, sender_name?, sender_company?, sender_offer? }`
+
+### Sequence frameworks
+
+Outreach is rarely a single email. Pick a 3-step framework at draft time
+for dramatically higher reply rates:
+
+| `framework` | Step 1 | Step 2 | Step 3 |
+|---|---|---|---|
+| `one-off` (default) | Single email. No follow-ups. | — | — |
+| `pas` | Name the pain (no pitch) | Agitate the cost | Propose solution + CTA |
+| `aida` | Attention hook | Build interest / proof | Desire + low-friction CTA |
+| `sdr` | Direct 2-line pitch | Value-add (free resource) | Breakup email ("last time") |
+
+When drafting a sequence, **batch by step, not by lead**:
+- Loop 1: for every lead, generate step 1
+- Loop 2: for every lead, generate step 2 (references step 1)
+- Loop 3: for every lead, generate step 3 (references 1 and 2)
+
+This way the handler can fetch prior steps for continuity when it drafts
+step 2/3, so the emails read like a coherent thread rather than three
+cold strangers.
+
+### Sending a sequence
+- `outreach.emails.send` — by default sends all drafted emails. For
+  sequences, pass `sequence_position: N` to send only that step.
+  Leads who already replied (at any prior step) are auto-skipped for
+  step 2+. The human clicks "Send step N" when they're ready — there
+  is no auto-scheduler; cadence is deliberate and human-controlled.
+  params: `{ campaign_id, email_ids?, sequence_position? }`
+  - `email_ids` — explicit list wins over everything else
+  - `sequence_position` — filter by step (1, 2, or 3)
+  - neither — send all drafts (legacy single-step behavior)
+
+### Other email actions
 - `outreach.emails.list` — all drafts/sends for a campaign.
   params: `{ campaign_id, limit? }`
 - `outreach.emails.update` — edit a single draft before send.
   params: `{ campaign_id, email_id, subject?, body_text?, body_html? }`
-- `outreach.emails.send` — **fires AgentMail**. Rewrites every `href`
-  through the `/t/:token` click tracker before send. Picks (or creates)
-  an AgentMail inbox for the campaign. Only call after Gate 2.
-  params: `{ campaign_id, email_ids? }` — omit `email_ids` to send all
-  drafts in the campaign.
 
 ### Replies (inbound, after AgentMail webhook fires)
 - `outreach.replies.list` — inbound replies. Filter by campaign.
@@ -305,26 +345,43 @@ for LEAD_ID in $MISSING; do
 done
 # Typically 40–70% of those leads now have emails.
 
-# 5. Generate drafts — per-lead loop with live progress narration
+# 5a. Generate drafts — Gemini path, 3-step PAS sequence.
+#     Loop by STEP first, then by lead. This lets step 2 reference
+#     step 1 for continuity when the server fetches prior steps.
 LEADS=$(curl -s -X POST $AGENT_HQ_URL/api/command ... \
-  -d '{"action":"outreach.leads.list","params":{"campaign_id":"abc123xyz"}}' | jq -r '.data[] | select(.email != null) | .id')
-TOTAL=$(echo "$LEADS" | wc -l); N=0
+  -d '{"action":"outreach.leads.list","params":{"campaign_id":"abc123xyz"}}' \
+  | jq -r '.data[] | select(.email != null) | .id')
+for STEP in 1 2 3; do
+  for LEAD_ID in $LEADS; do
+    curl -X POST $AGENT_HQ_URL/api/command ... \
+      -d "{\"action\":\"outreach.emails.generate_one\",\"params\":{\"campaign_id\":\"abc123xyz\",\"lead_id\":\"$LEAD_ID\",\"sender_name\":\"Mani\",\"sender_company\":\"Vertical AI\",\"sender_offer\":\"We cut dental no-shows 40% with AI SMS reminders. 2-week pilot, flat fee.\",\"framework\":\"pas\",\"step\":$STEP,\"total_steps\":3}}"
+  done
+  curl -X POST $AGENT_HQ_URL/api/command ... \
+    -d "{\"action\":\"activity.log\",\"params\":{\"category\":\"content\",\"summary\":\"Drafted step $STEP of 3 for all leads\"}}"
+done
+
+# 5b. ALTERNATIVE — you write the drafts yourself (no Gemini detour).
+#     Better quality if you're a strong writer already in context.
+#     Skip generate_one entirely, POST each draft via emails.create.
 for LEAD_ID in $LEADS; do
-  N=$((N+1))
+  # ... you construct your own subject + body per lead + step ...
   curl -X POST $AGENT_HQ_URL/api/command ... \
-    -d "{\"action\":\"outreach.emails.generate_one\",\"params\":{\"campaign_id\":\"abc123xyz\",\"lead_id\":\"$LEAD_ID\",\"sender_name\":\"Mani\",\"sender_company\":\"Vertical AI\",\"sender_offer\":\"We cut dental no-shows 40% with AI SMS reminders. 2-week pilot, flat fee.\"}}"
-  curl -X POST $AGENT_HQ_URL/api/command ... \
-    -d "{\"action\":\"activity.log\",\"params\":{\"category\":\"content\",\"summary\":\"Drafted email $N of $TOTAL\"}}"
+    -d "{\"action\":\"outreach.emails.create\",\"params\":{\"campaign_id\":\"abc123xyz\",\"lead_id\":\"$LEAD_ID\",\"sender_name\":\"Mani\",\"subject\":\"Quick question, <recipient>\",\"body_text\":\"<your draft>\",\"sequence_position\":1,\"sequence_total\":3,\"framework\":\"pas\"}}"
 done
 
 # ── GATE 2 ── log decision, ask human to approve real sends ──
 
 # (Human: "Send them")
 
-# 6. Send
+# 6. Send — for a sequence, send one step at a time on a human cadence.
+#    Get approval before EACH step (Gate 2 applies per step).
 curl -X POST $AGENT_HQ_URL/api/command ... \
-  -d '{"action":"outreach.emails.send","params":{"campaign_id":"abc123xyz"}}'
-# → { sent: 29, total: 29, errors: [] }
+  -d '{"action":"outreach.emails.send","params":{"campaign_id":"abc123xyz","sequence_position":1}}'
+
+# ... wait a few days, confirm Gate 2 again, then:
+curl -X POST $AGENT_HQ_URL/api/command ... \
+  -d '{"action":"outreach.emails.send","params":{"campaign_id":"abc123xyz","sequence_position":2}}'
+# Leads who already replied are auto-skipped.
 
 # 7. Wait for replies. When one arrives, offer to convert to task.
 curl -X POST $AGENT_HQ_URL/api/command ... \

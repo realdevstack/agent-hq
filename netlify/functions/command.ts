@@ -190,14 +190,45 @@ const DRAFT_SYSTEM_PROMPT = `You write short, high-reply-rate cold outreach emai
 - Do NOT fabricate statistics, client counts, case studies, or specific numbers that weren't given in the sender context. No "We've helped 50+ clients" unless that exact number was provided.
 - Sign the email with the sender's name and company exactly as provided — keep their original capitalization.
 - Output ONLY JSON: { "subject": "...", "body_text": "...", "body_html": "<p>...</p>" }.
-- body_html = plain paragraphs with <p> tags only. No inline styles.`;
+- body_html = plain paragraphs with <p> tags only. No inline styles.
+
+SEQUENCE MODE:
+If the user message names a FRAMEWORK and STEP, write the email for that specific step. Supported frameworks:
+
+PAS (Problem → Agitate → Solution):
+  - Step 1 (Problem): name one concrete pain the recipient's business type likely runs into. Ask a light curious question about how they handle it today. Do NOT pitch the solution yet.
+  - Step 2 (Agitate): follow up on step 1. Spell out a specific downstream cost of leaving the pain unaddressed (hours lost, revenue leaked, risk). Still no pitch — just sharpen the picture.
+  - Step 3 (Solution): now propose the sender's offer as the resolution. Tie back explicitly to the pain named in step 1. End with a direct low-friction ask.
+
+AIDA (Attention → Interest → Desire+Action):
+  - Step 1 (Attention): open with an unexpected observation, stat, or framing about their category. Short hook. Set up curiosity.
+  - Step 2 (Interest): build on step 1. Add one relevant proof point or insight. Paint the better state the sender's offer makes possible.
+  - Step 3 (Desire + Action): reinforce the CTA. Make it very low-friction — a 15-min call on a specific day, or a single yes/no reply.
+
+SDR (Direct → Value-add → Breakup):
+  - Step 1 (Direct): 2–3 lines. What you do, why them specifically, would they be open to a quick call.
+  - Step 2 (Value-add): a free resource, case study, or short insight that would genuinely help them — independent of whether they work with you. "Not asking for anything, thought this might help."
+  - Step 3 (Breakup): acknowledge you've reached out twice. Graceful off-ramp. Leave a direct line and warm wishes. No hard sell.
+
+Cross-framework continuity rule:
+- Steps 2 and 3 MUST acknowledge the prior step implicitly so the thread reads as a coherent follow-up, not a fresh cold email. Openers like "Following up on my note last week about <pain>...", "Wanted to send you this — ...", "Last time I'll reach out — ..." Use the previous-step context supplied in the user message to do this well.
+- Never copy phrases verbatim from the previous step. Reference, don't repeat.
+- Keep subject lines related but distinct per step. For steps 2 and 3, a reply-style subject ("Re: <step 1 subject>") is often best.`;
 
 type EmailDraft = { subject: string; body_text: string; body_html: string };
+
+type SequenceContext = {
+  framework?: "one-off" | "pas" | "aida" | "sdr" | null;
+  step?: number;
+  total_steps?: number;
+  previous_steps?: Array<{ step: number; subject: string; body_text: string }>;
+};
 
 async function generateEmailDraft(
   geminiKey: string,
   lead: { name?: string; company?: string; website?: string; category?: string; address?: string; notes?: string },
   senderContext: { sender_name?: string; sender_company?: string; sender_offer?: string; campaign_query?: string },
+  sequence: SequenceContext = {},
 ): Promise<EmailDraft> {
   const leadSummary = [
     lead.name ? `Business: ${lead.name}` : null,
@@ -219,12 +250,28 @@ async function generateEmailDraft(
     .filter(Boolean)
     .join("\n");
 
+  // Assemble the sequence block only when we're actually in sequence mode.
+  // One-off drafts skip this entirely to keep the prompt lean.
+  const isSequence = sequence.framework && sequence.framework !== "one-off";
+  let sequenceBlock = "";
+  if (isSequence) {
+    const step = sequence.step ?? 1;
+    const total = sequence.total_steps ?? 3;
+    sequenceBlock = `\n\nFRAMEWORK: ${sequence.framework}\nSTEP: ${step} of ${total}`;
+    if (sequence.previous_steps && sequence.previous_steps.length > 0) {
+      const prevBlock = sequence.previous_steps
+        .map((p) => `--- STEP ${p.step} ---\nSubject: ${p.subject}\n\n${p.body_text}`)
+        .join("\n\n");
+      sequenceBlock += `\n\nPREVIOUS STEPS (for continuity — reference implicitly, never copy):\n${prevBlock}`;
+    }
+  }
+
   const body = {
     systemInstruction: { role: "system", parts: [{ text: DRAFT_SYSTEM_PROMPT }] },
     contents: [
       {
         role: "user",
-        parts: [{ text: `RECIPIENT\n${leadSummary || "(no data)"}\n\nSENDER\n${senderSummary || "(no context)"}` }],
+        parts: [{ text: `RECIPIENT\n${leadSummary || "(no data)"}\n\nSENDER\n${senderSummary || "(no context)"}${sequenceBlock}` }],
       },
     ],
     generationConfig: { temperature: 0.7, responseMimeType: "application/json" },
@@ -1370,19 +1417,36 @@ export const handler: Handler = async (event) => {
       }
 
       case "outreach.emails.generate_one": {
-        // Drafts exactly one email for one lead. Lets the UI loop through
-        // N leads client-side and show a live "Generating X of Y" counter
-        // — instead of one slow server-side batch that blows Netlify's
-        // 26s cap on >~10 leads. Agents can also call this in a loop with
-        // a pause between each for polite pacing.
-        const { campaign_id, lead_id, sender_name, sender_company, sender_offer } = params as Record<string, string>;
-        if (!campaign_id || !lead_id) return fail(400, "campaign_id and lead_id required");
+        // Drafts exactly one email for one lead at one sequence step. Lets
+        // the UI loop through (lead × step) combinations client-side and
+        // show a live "Drafting step 2 of 3 for lead 5 of 20" counter —
+        // instead of one slow server-side batch that blows Netlify's 26s
+        // cap on >~10 leads. Agents can call this in a loop for polite
+        // pacing. For sequences (framework != one-off), the handler
+        // fetches previously-generated steps for continuity.
+        const {
+          campaign_id,
+          lead_id,
+          sender_name,
+          sender_company,
+          sender_offer,
+          framework,
+          step,
+          total_steps,
+        } = params as Record<string, unknown>;
+        if (typeof campaign_id !== "string" || !campaign_id) return fail(400, "campaign_id required");
+        if (typeof lead_id !== "string" || !lead_id) return fail(400, "lead_id required");
         const geminiKey = await readServiceKey("gemini");
         if (!geminiKey) return fail(400, "Gemini key not configured");
 
         const cs = store(OUTREACH_CAMPAIGNS);
         const campaign = await readJson<Record<string, unknown>>(cs, campaign_id);
         if (!campaign) return fail(404, "campaign not found");
+
+        // Normalize framework + step inputs. Default = one-off at step 1.
+        const fw = typeof framework === "string" && ["pas", "aida", "sdr"].includes(framework) ? (framework as "pas" | "aida" | "sdr") : "one-off";
+        const stepNum = typeof step === "number" && step >= 1 && step <= 5 ? Math.floor(step) : 1;
+        const totalNum = typeof total_steps === "number" && total_steps >= 1 && total_steps <= 5 ? Math.floor(total_steps) : fw === "one-off" ? 1 : 3;
 
         // Find the lead (iterate — scale here is in the hundreds).
         const leadsStore = store(OUTREACH_LEADS);
@@ -1398,11 +1462,32 @@ export const handler: Handler = async (event) => {
         if (!lead) return fail(404, "lead not found");
         if (!lead.email) return fail(400, "lead has no email address — cannot draft");
 
-        // Check if a draft already exists for this lead and short-circuit.
+        // Check if a draft already exists for this (lead, step) and short-circuit.
+        // Previously we dedupe'd on lead alone which broke sequences (step 2 would
+        // be skipped because step 1 already existed).
         const es = store(OUTREACH_EMAILS);
-        const existingEmails = await listJson<{ id: string; lead_id: string }>(es, `${campaign_id}/`);
-        const existing = existingEmails.find((e) => e.lead_id === lead_id);
+        const existingEmails = await listJson<{ id: string; lead_id: string; sequence_position?: number }>(
+          es,
+          `${campaign_id}/`,
+        );
+        const existing = existingEmails.find(
+          (e) => e.lead_id === lead_id && (e.sequence_position ?? 1) === stepNum,
+        );
         if (existing) return ok({ ...existing, skipped: true });
+
+        // For steps >1, pull prior steps for this lead so Gemini can reference
+        // them implicitly in the follow-up draft.
+        const previousSteps = existingEmails
+          .filter((e) => e.lead_id === lead_id && (e.sequence_position ?? 1) < stepNum)
+          .map((e) => {
+            const full = e as unknown as { sequence_position?: number; subject?: string; body_text?: string };
+            return {
+              step: full.sequence_position ?? 1,
+              subject: full.subject ?? "",
+              body_text: full.body_text ?? "",
+            };
+          })
+          .sort((a, b) => a.step - b.step);
 
         try {
           const draft = await generateEmailDraft(
@@ -1416,10 +1501,16 @@ export const handler: Handler = async (event) => {
               notes: lead.notes as string | undefined,
             },
             {
-              sender_name: sender_name as string | undefined,
-              sender_company: sender_company as string | undefined,
-              sender_offer: sender_offer as string | undefined,
+              sender_name: typeof sender_name === "string" ? sender_name : undefined,
+              sender_company: typeof sender_company === "string" ? sender_company : undefined,
+              sender_offer: typeof sender_offer === "string" ? sender_offer : undefined,
               campaign_query: campaign.query as string,
+            },
+            {
+              framework: fw,
+              step: stepNum,
+              total_steps: totalNum,
+              previous_steps: previousSteps,
             },
           );
           const emailId = nanoid(12);
@@ -1433,20 +1524,24 @@ export const handler: Handler = async (event) => {
             subject: draft.subject,
             body_text: draft.body_text,
             body_html: draft.body_html,
-            sender_name: sender_name ?? null,
+            sender_name: typeof sender_name === "string" ? sender_name : null,
+            sequence_position: stepNum,
+            sequence_total: totalNum,
+            framework: fw,
             status: "drafted",
             created_at: createdAt,
             updated_at: createdAt,
           };
           await writeJson(es, `${campaign_id}/${createdAt}-${emailId}`, record);
-          // Persist the sender context on the campaign so send can pick
-          // it up as the default From display name. Also increments
-          // emails_generated — safe race-wise since the UI loop is serial.
+          // Persist the sender context + default framework on the campaign
+          // so send + future generates can pick them up.
           await writeJson(cs, campaign_id, {
             ...campaign,
-            default_sender_name: sender_name || (campaign.default_sender_name as string | undefined) || null,
-            default_sender_company: sender_company || (campaign.default_sender_company as string | undefined) || null,
-            default_sender_offer: sender_offer || (campaign.default_sender_offer as string | undefined) || null,
+            default_sender_name: (typeof sender_name === "string" && sender_name) || (campaign.default_sender_name as string | undefined) || null,
+            default_sender_company: (typeof sender_company === "string" && sender_company) || (campaign.default_sender_company as string | undefined) || null,
+            default_sender_offer: (typeof sender_offer === "string" && sender_offer) || (campaign.default_sender_offer as string | undefined) || null,
+            default_framework: fw,
+            default_sequence_total: totalNum,
             emails_generated: (campaign.emails_generated as number ?? 0) + 1,
             updated_at: new Date().toISOString(),
           });
@@ -1454,6 +1549,99 @@ export const handler: Handler = async (event) => {
         } catch (err) {
           return fail(500, err instanceof Error ? err.message : "Draft failed");
         }
+      }
+
+      case "outreach.emails.create": {
+        // Agent-authored draft — skips Gemini entirely. The calling agent
+        // (Claude Code, OpenClaw, Hermes, whatever) writes its own subject
+        // and body, we just persist it as a drafted email. Same downstream
+        // pipeline as Gemini drafts — link tracking on send, webhook status
+        // updates, reply correlation all work identically.
+        const {
+          campaign_id,
+          lead_id,
+          subject,
+          body_text,
+          body_html,
+          sender_name,
+          sequence_position,
+          sequence_total,
+          framework,
+        } = params as Record<string, unknown>;
+        if (typeof campaign_id !== "string" || !campaign_id) return fail(400, "campaign_id required");
+        if (typeof lead_id !== "string" || !lead_id) return fail(400, "lead_id required");
+        if (typeof subject !== "string" || !subject.trim()) return fail(400, "subject required");
+        if (typeof body_text !== "string" || !body_text.trim()) return fail(400, "body_text required");
+
+        const cs = store(OUTREACH_CAMPAIGNS);
+        const campaign = await readJson<Record<string, unknown>>(cs, campaign_id);
+        if (!campaign) return fail(404, "campaign not found");
+
+        // Verify the lead exists + has an email.
+        const leadsStore = store(OUTREACH_LEADS);
+        const { blobs } = await leadsStore.list({ prefix: `${campaign_id}/` });
+        let lead: Record<string, unknown> | null = null;
+        for (const b of blobs) {
+          const row = await readJson<Record<string, unknown>>(leadsStore, b.key);
+          if ((row as { id?: string } | null)?.id === lead_id) {
+            lead = row;
+            break;
+          }
+        }
+        if (!lead) return fail(404, "lead not found");
+        if (!lead.email) return fail(400, "lead has no email address");
+
+        const stepNum = typeof sequence_position === "number" && sequence_position >= 1 ? Math.floor(sequence_position) : 1;
+        const totalNum = typeof sequence_total === "number" && sequence_total >= 1 ? Math.floor(sequence_total) : stepNum;
+        const fw = typeof framework === "string" && ["pas", "aida", "sdr", "one-off"].includes(framework) ? framework : "one-off";
+
+        // Dedupe on (lead, step) — same rule as generate_one.
+        const es = store(OUTREACH_EMAILS);
+        const existingEmails = await listJson<{ id: string; lead_id: string; sequence_position?: number }>(
+          es,
+          `${campaign_id}/`,
+        );
+        const existing = existingEmails.find(
+          (e) => e.lead_id === lead_id && (e.sequence_position ?? 1) === stepNum,
+        );
+        if (existing) return ok({ ...existing, skipped: true });
+
+        const emailId = nanoid(12);
+        const createdAt = new Date().toISOString();
+        const record = {
+          id: emailId,
+          campaign_id,
+          lead_id,
+          to_email: lead.email,
+          to_name: lead.name,
+          subject: subject.trim(),
+          body_text: body_text.trim(),
+          body_html: typeof body_html === "string" && body_html.trim() ? body_html : `<p>${body_text.replace(/\n/g, "</p><p>")}</p>`,
+          sender_name: typeof sender_name === "string" ? sender_name : null,
+          sequence_position: stepNum,
+          sequence_total: totalNum,
+          framework: fw,
+          source: "agent_drafted",
+          status: "drafted",
+          created_at: createdAt,
+          updated_at: createdAt,
+        };
+        await writeJson(es, `${campaign_id}/${createdAt}-${emailId}`, record);
+        await writeJson(cs, campaign_id, {
+          ...campaign,
+          default_sender_name: (typeof sender_name === "string" && sender_name) || (campaign.default_sender_name as string | undefined) || null,
+          default_framework: fw,
+          default_sequence_total: totalNum,
+          emails_generated: (campaign.emails_generated as number ?? 0) + 1,
+          updated_at: new Date().toISOString(),
+        });
+        await logActivity({
+          agent_id: identity?.kind === "agent" ? identity.agent_id : null,
+          category: "content",
+          summary: `Agent drafted email (${fw} step ${stepNum}/${totalNum}) for ${lead.name}`,
+          details: { campaign_id, lead_id, email_id: emailId, framework: fw, step: stepNum },
+        });
+        return ok(record);
       }
 
       case "outreach.emails.generate": {
@@ -1563,10 +1751,17 @@ export const handler: Handler = async (event) => {
       }
 
       case "outreach.emails.send": {
-        // Sends all drafted emails in a campaign via AgentMail. Rewrites
-        // outbound links through the /t/:token tracker first, then records
-        // AgentMail's message_id + thread_id for later webhook correlation.
-        const { campaign_id, email_ids } = params as Record<string, unknown>;
+        // Sends drafted emails via AgentMail. Rewrites outbound links
+        // through the /t/:token tracker first, records AgentMail's
+        // message_id + thread_id for later webhook correlation.
+        //
+        // Filtering:
+        //   - email_ids: explicit list wins. Sends exactly those.
+        //   - sequence_position: sends all drafts at that step only.
+        //     For step 2+, automatically skips leads that already replied
+        //     to an earlier step (don't nag people who said yes).
+        //   - neither: sends all drafted emails in the campaign (legacy).
+        const { campaign_id, email_ids, sequence_position } = params as Record<string, unknown>;
         if (typeof campaign_id !== "string" || !campaign_id) return fail(400, "campaign_id required");
         const agentmailKey = await readServiceKey("agentmail");
         if (!agentmailKey) return fail(400, "AgentMail key not configured");
@@ -1589,12 +1784,28 @@ export const handler: Handler = async (event) => {
         const campaignSenderName = campaign.default_sender_name as string | undefined;
 
         const es = store(OUTREACH_EMAILS);
-        const allEmails = await listJson<{ id: string; campaign_id: string; lead_id: string; to_email: string; subject: string; body_text: string; body_html: string; status: string; sender_name?: string | null }>(
+        const allEmails = await listJson<{ id: string; campaign_id: string; lead_id: string; to_email: string; subject: string; body_text: string; body_html: string; status: string; sender_name?: string | null; sequence_position?: number }>(
           es,
           `${campaign_id}/`,
         );
         const selectedIds = Array.isArray(email_ids) ? new Set(email_ids as string[]) : null;
-        const toSend = allEmails.filter((e) => e.status === "drafted" && (!selectedIds || selectedIds.has(e.id)));
+        const targetStep = typeof sequence_position === "number" && sequence_position >= 1 ? Math.floor(sequence_position) : null;
+
+        // Leads that already replied (at any step) — skip for sequence follow-ups.
+        const repliedLeadIds = new Set(
+          allEmails.filter((e) => e.status === "replied").map((e) => e.lead_id),
+        );
+
+        const toSend = allEmails.filter((e) => {
+          if (e.status !== "drafted") return false;
+          if (selectedIds) return selectedIds.has(e.id);
+          if (targetStep !== null) {
+            if ((e.sequence_position ?? 1) !== targetStep) return false;
+            // Don't nag leads who already replied to an earlier step.
+            if (targetStep > 1 && repliedLeadIds.has(e.lead_id)) return false;
+          }
+          return true;
+        });
 
         let sent = 0;
         const errors: Array<{ email_id: string; error: string }> = [];

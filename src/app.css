@@ -14,6 +14,12 @@ body,
   padding: 0;
 }
 
+/* Bump the root so every rem-based Tailwind size (text-sm, text-base, gap, padding)
+   scales up about 6% — the dashboard was reading a touch tight at 16px default. */
+html {
+  font-size: 17px;
+}
+
 body {
   font-family: "Rajdhani", system-ui, sans-serif;
   font-weight: 500;
@@ -173,6 +179,37 @@ pre {
   to { opacity: 1; transform: translateY(0); }
 }
 .animate-fade-in { animation: fade-in 160ms ease-out; }
+
+/* Live feed: a new entry at the top gets a soft cyan pulse + slide-in so the
+   eye catches that something new arrived without a full re-render flicker. */
+@keyframes feed-flash {
+  0% {
+    background: rgba(0, 191, 255, 0.18);
+    transform: translateY(-4px);
+    opacity: 0.2;
+  }
+  40% {
+    background: rgba(0, 191, 255, 0.12);
+    transform: translateY(0);
+    opacity: 1;
+  }
+  100% {
+    background: transparent;
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+.animate-feed-flash { animation: feed-flash 1800ms ease-out; }
+
+/* Counter pulse — when a numeric stat changes, briefly scale + glow so the
+   user's eye is pulled to the one that just moved. Pairs with the
+   AnimatedNumber React component that toggles the class on value change. */
+@keyframes count-pulse {
+  0% { transform: scale(1); text-shadow: 0 0 0 rgba(0,191,255,0); }
+  30% { transform: scale(1.14); text-shadow: 0 0 22px rgba(0,191,255,0.7); }
+  100% { transform: scale(1); text-shadow: 0 0 0 rgba(0,191,255,0); }
+}
+.animate-count-pulse { animation: count-pulse 900ms ease-out; }
 
 /* ── Scrollbar ─────────────────────────────── */
 *::-webkit-scrollbar { width: 10px; height: 10px; }

@@ -19,6 +19,7 @@ import OutreachWizard from "@/components/OutreachWizard";
 import OnboardingWizard from "@/components/OnboardingWizard";
 import WebhookSetupCard from "@/components/WebhookSetupCard";
 import SkillViewerModal from "@/components/SkillViewerModal";
+import AnimatedNumber from "@/components/AnimatedNumber";
 import { call } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
 import outreachSkillMd from "../../skills/mission-control-outreach.md?raw";
@@ -337,7 +338,9 @@ function StatCard({
   return (
     <div className={`rounded-xl p-4 bg-gradient-to-br ${tints[tint]} border`}>
       <div className="flex items-center gap-2 mb-2 opacity-90">{icon}</div>
-      <div className="font-display text-2xl font-black text-white tracking-tight">{value.toLocaleString()}</div>
+      <div className="font-display text-2xl font-black text-white tracking-tight">
+        <AnimatedNumber value={value} />
+      </div>
       <div className="text-[10px] uppercase tracking-widest text-white/60 font-semibold mt-0.5">{label}</div>
     </div>
   );

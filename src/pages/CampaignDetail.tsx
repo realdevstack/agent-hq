@@ -27,6 +27,7 @@ import {
 import PageHeader from "@/components/PageHeader";
 import GlassCard from "@/components/GlassCard";
 import Modal, { FormField, PrimaryButton, TextInput, TextArea } from "@/components/Modal";
+import AnimatedNumber from "@/components/AnimatedNumber";
 import { call } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
 
@@ -74,6 +75,8 @@ type Lead = {
   created_at: string;
 };
 
+type Framework = "one-off" | "pas" | "aida" | "sdr";
+
 type EmailRow = {
   id: string;
   campaign_id: string;
@@ -85,6 +88,10 @@ type EmailRow = {
   body_html: string;
   status: string;
   click_count?: number;
+  sequence_position?: number;
+  sequence_total?: number;
+  framework?: Framework | null;
+  source?: string; // "agent_drafted" when injected via emails.create
   created_at: string;
   updated_at: string;
 };
@@ -208,6 +215,32 @@ export default function CampaignDetail() {
     }
   }
 
+  // Sends only the drafted emails at a specific sequence step. Used by
+  // the per-step buttons when the campaign has a 3-email framework.
+  async function sendStep(step: number) {
+    if (!id) return;
+    const draftsAtStep = emails.filter(
+      (e) => e.status === "drafted" && (e.sequence_position ?? 1) === step,
+    ).length;
+    if (draftsAtStep === 0) {
+      alert(`No drafted emails at step ${step}.`);
+      return;
+    }
+    const verb = step === 1 ? "Send step 1" : `Send follow-up step ${step}`;
+    if (!confirm(`${verb} — ${draftsAtStep} email${draftsAtStep === 1 ? "" : "s"} via AgentMail. Leads who already replied will be skipped automatically.`))
+      return;
+    setBusyAction("send");
+    setErr(null);
+    try {
+      await call("outreach.emails.send", { campaign_id: id, sequence_position: step });
+      await refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Send failed");
+    } finally {
+      setBusyAction(null);
+    }
+  }
+
   async function removeLead(leadId: string) {
     if (!id) return;
     try {
@@ -275,6 +308,29 @@ export default function CampaignDetail() {
       replied,
     };
   }, [emails, leads]);
+
+  // Figure out if this is a sequence campaign and how each step is doing.
+  // We infer sequence_total from emails (fall back to the campaign
+  // default if no drafts yet).
+  const sequenceInfo = useMemo(() => {
+    const maxStep = emails.reduce((m, e) => Math.max(m, e.sequence_position ?? 1), 1);
+    const isSequence = maxStep > 1;
+    const stats: Array<{ step: number; drafted: number; sent: number; delivered: number; clicked: number; replied: number; framework: Framework | null }> = [];
+    for (let s = 1; s <= maxStep; s++) {
+      const emailsAtStep = emails.filter((e) => (e.sequence_position ?? 1) === s);
+      stats.push({
+        step: s,
+        drafted: emailsAtStep.filter((e) => e.status === "drafted").length,
+        sent: emailsAtStep.filter((e) => e.status !== "drafted").length,
+        delivered: emailsAtStep.filter((e) => ["delivered", "clicked", "replied"].includes(e.status)).length,
+        clicked: emailsAtStep.filter((e) => e.status === "clicked" || e.status === "replied" || (e.click_count ?? 0) > 0).length,
+        replied: emailsAtStep.filter((e) => e.status === "replied").length,
+        framework: (emailsAtStep[0]?.framework ?? null) as Framework | null,
+      });
+    }
+    const fw = (emails[0]?.framework ?? null) as Framework | null;
+    return { isSequence, maxStep, stats, framework: fw };
+  }, [emails]);
 
   if (!campaign) {
     return (
@@ -389,7 +445,7 @@ export default function CampaignDetail() {
       </GlassCard>
 
       {/* Action bar */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
+      <div className={`grid gap-3 mb-5 ${sequenceInfo.isSequence ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1 md:grid-cols-3"}`}>
         <ActionButton
           disabled={busyAction !== null || !structured || campaign.status === "searching"}
           onClick={runScrape}
@@ -416,20 +472,92 @@ export default function CampaignDetail() {
           onClick={() => setGenerateModalOpen(true)}
           busy={busyAction === "generate"}
           label="Generate emails"
-          sublabel={counters && counters.drafts > 0 ? `${counters.drafts} drafts ready` : "Gemini writes a personalised first touch per lead"}
+          sublabel={
+            counters && counters.drafts > 0
+              ? `${counters.drafts} draft${counters.drafts === 1 ? "" : "s"} ready${sequenceInfo.isSequence ? ` · ${sequenceInfo.framework?.toUpperCase()} sequence` : ""}`
+              : "Gemini drafts · pick a framework for a 3-email sequence"
+          }
           icon={<Sparkles size={16} />}
           tint="purple"
         />
-        <ActionButton
-          disabled={busyAction !== null || (counters?.drafts ?? 0) === 0}
-          onClick={sendAll}
-          busy={busyAction === "send"}
-          label="Send campaign"
-          sublabel={counters && counters.sent > 0 ? `${counters.sent} sent · AgentMail` : "Fires all drafts from AgentMail inbox"}
-          icon={<Send size={16} />}
-          tint="accent"
-        />
+        {!sequenceInfo.isSequence && (
+          <ActionButton
+            disabled={busyAction !== null || (counters?.drafts ?? 0) === 0}
+            onClick={sendAll}
+            busy={busyAction === "send"}
+            label="Send campaign"
+            sublabel={counters && counters.sent > 0 ? `${counters.sent} sent · AgentMail` : "Fires all drafts from AgentMail inbox"}
+            icon={<Send size={16} />}
+            tint="accent"
+          />
+        )}
       </div>
+
+      {/* Per-step send bar — appears only for sequence campaigns. Each step
+          is a separate send button so the user controls cadence manually. */}
+      {sequenceInfo.isSequence && (
+        <GlassCard className="mb-5 bg-gradient-to-br from-accent/[0.06] to-purple/[0.06]">
+          <div className="flex items-center gap-2 mb-3">
+            <Send size={14} className="text-accent" />
+            <h3 className="font-display text-xs tracking-widest uppercase text-white/75 font-bold">
+              Sequence · {sequenceInfo.framework?.toUpperCase()}
+            </h3>
+            <span className="text-[11px] text-white/45 font-mono">
+              {sequenceInfo.maxStep} steps · send each on your own cadence
+            </span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+            {sequenceInfo.stats.map((step) => {
+              const canSend = step.drafted > 0;
+              const prevSent = step.step === 1 || (sequenceInfo.stats[step.step - 2]?.sent ?? 0) > 0;
+              const disabled = busyAction !== null || !canSend || !prevSent;
+              return (
+                <div
+                  key={step.step}
+                  className="rounded-xl border border-white/10 bg-black/30 p-3 flex flex-col gap-2"
+                >
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-lg bg-accent/15 border border-accent/40 flex items-center justify-center text-accent font-bold text-xs">
+                      {step.step}
+                    </div>
+                    <div className="flex-1">
+                      <div className="text-sm font-semibold text-white">Step {step.step}</div>
+                      <div className="text-[11px] font-mono text-white/50">
+                        {step.sent}/{step.sent + step.drafted} sent
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 text-[11px] text-white/55 font-mono">
+                    <span>{step.drafted} drafts</span>
+                    {step.replied > 0 && <span className="text-green-300">{step.replied} replied</span>}
+                    {step.clicked > 0 && <span className="text-accent">{step.clicked} clicks</span>}
+                  </div>
+                  <button
+                    onClick={() => sendStep(step.step)}
+                    disabled={disabled}
+                    title={!prevSent && step.step > 1 ? `Send step ${step.step - 1} first` : undefined}
+                    className={`mt-1 px-3 py-2 rounded-lg text-xs font-bold tracking-wide transition ${
+                      disabled
+                        ? "bg-white/5 border border-white/10 text-white/40 cursor-not-allowed"
+                        : "bg-accent/20 hover:bg-accent/30 border border-accent/50 text-accent"
+                    }`}
+                  >
+                    {busyAction === "send" ? (
+                      <Loader2 size={12} className="inline animate-spin mr-1" />
+                    ) : (
+                      <Send size={12} className="inline mr-1" />
+                    )}
+                    {canSend ? `Send ${step.drafted} email${step.drafted === 1 ? "" : "s"}` : "Nothing to send"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          <p className="text-[10px] text-white/40 mt-3 font-mono">
+            Leads who reply to an earlier step are auto-skipped on later sends.
+          </p>
+        </GlassCard>
+      )}
 
       {/* Counters */}
       <div className="grid grid-cols-3 md:grid-cols-6 gap-2 mb-6">
@@ -644,27 +772,42 @@ export default function CampaignDetail() {
               </div>
             )}
             <div className="space-y-2">
-              {emails.map((e) => (
-                <div
-                  key={e.id}
-                  onClick={() => setEmailDetail(e)}
-                  className="rounded-lg bg-white/[0.02] hover:bg-white/[0.05] border border-white/[0.06] hover:border-white/[0.12] p-3 cursor-pointer transition"
-                >
-                  <div className="flex items-center gap-2 flex-wrap mb-1">
-                    <span className="text-xs text-white/50 font-mono">to</span>
-                    <span className="text-sm text-white font-medium truncate">{e.to_email}</span>
-                    <StatusPill status={e.status} />
-                    {(e.click_count ?? 0) > 0 && (
-                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-accent/15 border border-accent/30 text-accent text-[10px] font-bold">
-                        <MousePointerClick size={10} /> {e.click_count}
-                      </span>
-                    )}
-                    <ExternalLink size={11} className="ml-auto text-white/30" />
+              {emails.map((e) => {
+                const pos = e.sequence_position ?? 1;
+                const total = e.sequence_total ?? 1;
+                const showStep = total > 1;
+                return (
+                  <div
+                    key={e.id}
+                    onClick={() => setEmailDetail(e)}
+                    className="rounded-lg bg-white/[0.02] hover:bg-white/[0.05] border border-white/[0.06] hover:border-white/[0.12] p-3 cursor-pointer transition"
+                  >
+                    <div className="flex items-center gap-2 flex-wrap mb-1">
+                      {showStep && (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-accent/10 border border-accent/30 text-accent text-[10px] font-bold tracking-wider uppercase">
+                          Step {pos}/{total}
+                        </span>
+                      )}
+                      {e.source === "agent_drafted" && (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-purple/15 border border-purple/30 text-purple text-[10px] font-bold tracking-wider uppercase">
+                          Agent
+                        </span>
+                      )}
+                      <span className="text-xs text-white/50 font-mono">to</span>
+                      <span className="text-sm text-white font-medium truncate">{e.to_email}</span>
+                      <StatusPill status={e.status} />
+                      {(e.click_count ?? 0) > 0 && (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-accent/15 border border-accent/30 text-accent text-[10px] font-bold">
+                          <MousePointerClick size={10} /> {e.click_count}
+                        </span>
+                      )}
+                      <ExternalLink size={11} className="ml-auto text-white/30" />
+                    </div>
+                    <p className="text-sm font-semibold text-white mb-0.5">{e.subject}</p>
+                    <p className="text-xs text-white/55 line-clamp-2 whitespace-pre-wrap">{e.body_text}</p>
                   </div>
-                  <p className="text-sm font-semibold text-white mb-0.5">{e.subject}</p>
-                  <p className="text-xs text-white/55 line-clamp-2 whitespace-pre-wrap">{e.body_text}</p>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </>
         )}
@@ -751,7 +894,9 @@ function MiniStat({ label, value, icon, tint }: { label: string; value: number; 
   return (
     <div className="rounded-lg bg-white/[0.02] border border-white/[0.06] px-3 py-2">
       <div className={`flex items-center gap-1.5 mb-0.5 ${tints[tint]}`}>{icon}<span className="text-[10px] uppercase tracking-widest font-bold">{label}</span></div>
-      <div className="font-display text-xl font-black text-white tabular-nums">{value.toLocaleString()}</div>
+      <div className="font-display text-xl font-black text-white">
+        <AnimatedNumber value={value} />
+      </div>
     </div>
   );
 }
@@ -828,6 +973,32 @@ function AddTestLeadModal({ open, onClose, campaignId, onAdded }: { open: boolea
   );
 }
 
+const FRAMEWORK_OPTIONS: Array<{ value: Framework; label: string; desc: string; stepLabels?: [string, string, string] }> = [
+  {
+    value: "one-off",
+    label: "One-off",
+    desc: "Single email per lead. Fast, no follow-ups.",
+  },
+  {
+    value: "pas",
+    label: "PAS · 3 emails",
+    desc: "Problem → Agitate → Solution. Classic B2B pattern.",
+    stepLabels: ["Name the pain", "Agitate the cost", "Propose solution"],
+  },
+  {
+    value: "aida",
+    label: "AIDA · 3 emails",
+    desc: "Attention → Interest → Desire + Action. Hook-forward.",
+    stepLabels: ["Grab attention", "Build interest", "Desire + CTA"],
+  },
+  {
+    value: "sdr",
+    label: "Short SDR · 3 emails",
+    desc: "Direct pitch → Value-add → Breakup. Most polite.",
+    stepLabels: ["Direct pitch", "Value-add", "Warm breakup"],
+  },
+];
+
 function GenerateEmailsModal({
   open,
   onClose,
@@ -854,28 +1025,52 @@ function GenerateEmailsModal({
   const [senderName, setSenderName] = useState("");
   const [senderCompany, setSenderCompany] = useState("");
   const [senderOffer, setSenderOffer] = useState("");
+  const [framework, setFramework] = useState<Framework>("one-off");
   const [busy, setBusy] = useState(false);
   const [localErr, setLocalErr] = useState<string | null>(null);
 
-  // Compute eligible leads each render so the user sees a live count.
-  const existingLeadIds = new Set(existingEmails.map((e) => e.lead_id));
-  const eligibleLeads = leads.filter((l) => l.email && !existingLeadIds.has(l.id));
+  const totalSteps = framework === "one-off" ? 1 : 3;
+  const currentFramework = FRAMEWORK_OPTIONS.find((f) => f.value === framework)!;
+
+  // Leads with an email are eligible. For sequences, we check per-(lead, step)
+  // when drafting — skipping a lead only at a step that already has a draft.
+  // For the pre-submit count display we show drafts-to-create = eligible × steps
+  // minus any per-(lead, step) duplicates that already exist.
+  const leadsWithEmail = leads.filter((l) => l.email);
+  const existingByLeadStep = new Set(
+    existingEmails.map((e) => `${e.lead_id}__${e.sequence_position ?? 1}`),
+  );
+  const plannedPairs: Array<{ lead: Lead; step: number }> = [];
+  for (const lead of leadsWithEmail) {
+    for (let s = 1; s <= totalSteps; s++) {
+      if (existingByLeadStep.has(`${lead.id}__${s}`)) continue;
+      plannedPairs.push({ lead, step: s });
+    }
+  }
+  const plannedCount = plannedPairs.length;
   const skippedNoEmail = leads.filter((l) => !l.email).length;
   const skippedNoEmailButWebsite = leads.filter((l) => !l.email && l.website).length;
-  const skippedAlreadyDrafted = leads.filter((l) => l.email && existingLeadIds.has(l.id)).length;
+  const skippedAlreadyDrafted = leadsWithEmail.length * totalSteps - plannedCount;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!senderOffer.trim() || eligibleLeads.length === 0) return;
+    if (!senderOffer.trim() || plannedCount === 0) return;
     setBusy(true);
     setBusyAction("generate");
     setLocalErr(null);
     setErr(null);
-    setProgress({ done: 0, total: eligibleLeads.length });
+    setProgress({ done: 0, total: plannedCount });
     let done = 0;
-    const errors: Array<{ lead_id: string; error: string }> = [];
+    const errors: Array<{ lead_id: string; step: number; error: string }> = [];
     try {
-      for (const lead of eligibleLeads) {
+      // Critical ordering: ALL lead × step=1 first, then step=2, then step=3.
+      // Step 2 drafts reference step 1 for continuity; step 3 references both.
+      // If we looped per-lead (step 1+2+3 for lead A, then step 1+2+3 for lead B),
+      // early leads would have full sequences while later leads sat empty — and
+      // step 2 of lead B couldn't reference the step 1 we just drafted. Batching
+      // by step keeps the sequence coherent across the whole campaign.
+      const sortedPairs = [...plannedPairs].sort((a, b) => a.step - b.step || a.lead.id.localeCompare(b.lead.id));
+      for (const { lead, step } of sortedPairs) {
         try {
           await call("outreach.emails.generate_one", {
             campaign_id: campaignId,
@@ -883,24 +1078,24 @@ function GenerateEmailsModal({
             sender_name: senderName,
             sender_company: senderCompany,
             sender_offer: senderOffer,
+            framework,
+            step,
+            total_steps: totalSteps,
           });
         } catch (err) {
-          errors.push({ lead_id: lead.id, error: err instanceof Error ? err.message : "unknown" });
+          errors.push({ lead_id: lead.id, step, error: err instanceof Error ? err.message : "unknown" });
         }
         done++;
-        setProgress({ done, total: eligibleLeads.length });
-        // Refresh the campaign detail view every 3 drafts so the user
-        // watches drafts appear in real time.
-        if (done % 3 === 0 || done === eligibleLeads.length) onComplete();
+        setProgress({ done, total: plannedCount });
+        // Refresh the campaign detail view periodically so the user watches
+        // drafts appear in real time.
+        if (done % 3 === 0 || done === plannedCount) onComplete();
       }
       if (errors.length > 0 && done - errors.length === 0) {
         setLocalErr(`All ${errors.length} drafts failed. First error: ${errors[0]?.error ?? "unknown"}`);
         setErr(errors[0]?.error ?? "Drafts failed");
       } else {
-        // Close modal on success (full or partial).
         onClose();
-        // Clear progress after a short beat so the campaign page can
-        // celebrate the final count.
         setTimeout(() => setProgress(null), 1200);
       }
     } finally {
@@ -914,14 +1109,68 @@ function GenerateEmailsModal({
       open={open}
       onClose={onClose}
       title="Generate emails"
-      description="Gemini drafts one personalised first-touch per lead with an email. Progress updates live."
-      maxWidth="max-w-lg"
+      description="Gemini drafts personalised emails per lead. Pick a framework for a 3-email sequence, or keep it to a single first-touch."
+      maxWidth="max-w-2xl"
     >
       <form onSubmit={submit} className="space-y-4">
+        {/* Framework picker — the new heart of the flow */}
+        <div>
+          <div className="text-xs uppercase tracking-widest text-white/80 font-display font-bold mb-2">
+            Sequence framework
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            {FRAMEWORK_OPTIONS.map((opt) => {
+              const active = framework === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setFramework(opt.value)}
+                  className={`text-left rounded-xl border px-3 py-2.5 transition ${
+                    active
+                      ? "bg-primary/15 border-primary/50 shadow-glow"
+                      : "bg-white/[0.02] border-white/10 hover:border-white/25"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <span className={`font-display font-bold text-sm ${active ? "text-white" : "text-white/85"}`}>
+                      {opt.label}
+                    </span>
+                    {active && <Check size={13} className="text-primary" />}
+                  </div>
+                  <p className={`text-[11px] ${active ? "text-white/75" : "text-white/50"}`}>{opt.desc}</p>
+                  {opt.stepLabels && (
+                    <div className="flex items-center gap-1 mt-2 text-[10px] font-mono text-white/50">
+                      <span className="px-1.5 py-0.5 rounded bg-black/30">1· {opt.stepLabels[0]}</span>
+                      <span>→</span>
+                      <span className="px-1.5 py-0.5 rounded bg-black/30">2· {opt.stepLabels[1]}</span>
+                      <span>→</span>
+                      <span className="px-1.5 py-0.5 rounded bg-black/30">3· {opt.stepLabels[2]}</span>
+                    </div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          {totalSteps > 1 && (
+            <p className="text-[11px] text-white/55 mt-2">
+              You'll send each step manually — "Send step 1" now, then "Send step 2" a few days later, etc.
+              Leads who reply to an earlier step are auto-skipped on later sends.
+            </p>
+          )}
+        </div>
+
         <div className="rounded-lg bg-white/[0.03] border border-white/[0.08] p-3 space-y-1">
           <div className="flex justify-between text-sm">
-            <span className="text-white/70">Leads ready to draft</span>
-            <span className="font-mono font-bold text-primary">{eligibleLeads.length}</span>
+            <span className="text-white/70">Drafts to create</span>
+            <span className="font-mono font-bold text-primary">
+              {plannedCount}
+              {totalSteps > 1 && (
+                <span className="text-white/50 font-normal text-xs ml-1">
+                  ({leadsWithEmail.length} leads × {totalSteps} steps)
+                </span>
+              )}
+            </span>
           </div>
           {skippedNoEmail > 0 && (
             <div className="flex justify-between text-xs">
@@ -959,7 +1208,9 @@ function GenerateEmailsModal({
             <div className="flex items-center gap-2 text-xs text-primary mb-1.5">
               <Loader2 size={12} className="animate-spin" />
               <span className="font-mono">
-                Drafting {progress.done} of {progress.total}…
+                {totalSteps > 1
+                  ? `Drafting sequence — ${progress.done} of ${progress.total}`
+                  : `Drafting ${progress.done} of ${progress.total}`}
               </span>
             </div>
             <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
@@ -976,8 +1227,9 @@ function GenerateEmailsModal({
         )}
 
         <div className="flex items-center gap-3">
-          <PrimaryButton type="submit" loading={busy} disabled={!senderOffer.trim() || busy || eligibleLeads.length === 0}>
-            <Sparkles size={14} /> Generate {eligibleLeads.length} draft{eligibleLeads.length === 1 ? "" : "s"}
+          <PrimaryButton type="submit" loading={busy} disabled={!senderOffer.trim() || busy || plannedCount === 0}>
+            <Sparkles size={14} /> Generate {plannedCount} draft{plannedCount === 1 ? "" : "s"}
+            {totalSteps > 1 && <span className="opacity-75">· {currentFramework.label.split(" ")[0]}</span>}
           </PrimaryButton>
           <button type="button" onClick={onClose} className="px-4 py-3 text-sm text-white/60 hover:text-white font-medium">
             {busy ? "Close (keeps running)" : "Cancel"}
