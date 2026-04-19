@@ -277,15 +277,18 @@ type ApifyLead = {
   // fields we actually read.
 };
 
-async function runApifyGoogleMapsScraper(
+// Apify scrapes typically take 30s–3min. Netlify's synchronous function
+// cap is ~26s, so we can't block on run-sync-get-dataset-items. Instead:
+// start the actor asynchronously, persist the run id, and let the client
+// call outreach.campaign.sync on a short poll loop to finalize once the
+// run reaches SUCCEEDED.
+
+async function startApifyGoogleMapsRun(
   apifyKey: string,
   searchTerms: string[],
   location: string,
   maxResults: number,
-): Promise<Array<Record<string, unknown>>> {
-  // compass/crawler-google-places is the well-known cheap actor. Runs take
-  // 30s–3min depending on maxCrawledPlacesPerSearch. We use runSync-get-dataset-items
-  // so we get results back in one HTTP call (up to Apify's 5-min timeout).
+): Promise<{ runId: string; defaultDatasetId: string | null; status: string }> {
   const input = {
     searchStringsArray: searchTerms,
     locationQuery: location,
@@ -296,7 +299,7 @@ async function runApifyGoogleMapsScraper(
     allPlacesNoSearchAction: "",
   };
   const r = await fetch(
-    `https://api.apify.com/v2/acts/compass~crawler-google-places/run-sync-get-dataset-items?token=${encodeURIComponent(apifyKey)}&timeout=180`,
+    `https://api.apify.com/v2/acts/compass~crawler-google-places/runs?token=${encodeURIComponent(apifyKey)}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -305,10 +308,49 @@ async function runApifyGoogleMapsScraper(
   );
   if (!r.ok) {
     const txt = await r.text();
-    throw new Error(`Apify run failed (${r.status}): ${txt.slice(0, 300)}`);
+    throw new Error(`Apify run start failed (${r.status}): ${txt.slice(0, 300)}`);
   }
-  const items = (await r.json()) as Array<Record<string, unknown>>;
-  return items.slice(0, maxResults);
+  const data = (await r.json()) as { data?: { id?: string; defaultDatasetId?: string; status?: string } };
+  if (!data.data?.id) throw new Error("Apify did not return a run id");
+  return {
+    runId: data.data.id,
+    defaultDatasetId: data.data.defaultDatasetId ?? null,
+    status: data.data.status ?? "READY",
+  };
+}
+
+async function getApifyRunStatus(
+  apifyKey: string,
+  runId: string,
+): Promise<{ status: string; defaultDatasetId: string | null; statusMessage: string | null }> {
+  const r = await fetch(
+    `https://api.apify.com/v2/actor-runs/${runId}?token=${encodeURIComponent(apifyKey)}`,
+  );
+  if (!r.ok) {
+    const txt = await r.text();
+    throw new Error(`Apify run fetch failed (${r.status}): ${txt.slice(0, 200)}`);
+  }
+  const data = (await r.json()) as { data?: { status?: string; defaultDatasetId?: string; statusMessage?: string } };
+  return {
+    status: data.data?.status ?? "UNKNOWN",
+    defaultDatasetId: data.data?.defaultDatasetId ?? null,
+    statusMessage: data.data?.statusMessage ?? null,
+  };
+}
+
+async function getApifyDatasetItems(
+  apifyKey: string,
+  datasetId: string,
+  limit: number,
+): Promise<Array<Record<string, unknown>>> {
+  const r = await fetch(
+    `https://api.apify.com/v2/datasets/${datasetId}/items?token=${encodeURIComponent(apifyKey)}&clean=true&limit=${limit}`,
+  );
+  if (!r.ok) {
+    const txt = await r.text();
+    throw new Error(`Apify dataset fetch failed (${r.status}): ${txt.slice(0, 200)}`);
+  }
+  return (await r.json()) as Array<Record<string, unknown>>;
 }
 
 function extractLeadFromApify(raw: Record<string, unknown>): {
@@ -998,9 +1040,10 @@ export const handler: Handler = async (event) => {
       }
 
       case "outreach.campaign.run": {
-        // Invokes the Apify Google Maps scraper and imports the results
-        // as leads under this campaign. Blocks on the actor run (up to
-        // 3 min); UI shows a loading state meanwhile.
+        // Starts the Apify actor asynchronously and returns immediately.
+        // Netlify's ~26s function cap means we can't block on a scrape
+        // that typically runs 30s–3min. The client polls
+        // outreach.campaign.sync to drive the state transition to "ready".
         const { id } = params as Record<string, string>;
         if (!id) return fail(400, "id required");
         const s = store(OUTREACH_CAMPAIGNS);
@@ -1011,39 +1054,20 @@ export const handler: Handler = async (event) => {
         const apifyKey = await readServiceKey("apify");
         if (!apifyKey) return fail(400, "Apify key not configured");
 
-        // Mark campaign as searching so the UI shows the right state.
-        await writeJson(s, id, { ...campaign, status: "searching", updated_at: new Date().toISOString() });
-
         try {
-          const items = await runApifyGoogleMapsScraper(
+          const run = await startApifyGoogleMapsRun(
             apifyKey,
             structured.searchTerms,
             structured.location,
             structured.maxResults,
           );
-          const leadsStore = store(OUTREACH_LEADS);
-          let imported = 0;
-          for (const raw of items) {
-            const extracted = extractLeadFromApify(raw);
-            const leadId = nanoid(10);
-            const createdAt = new Date().toISOString();
-            await writeJson(leadsStore, `${id}/${createdAt}-${leadId}`, {
-              id: leadId,
-              campaign_id: id,
-              ...extracted,
-              raw,
-              status: "new", // new | drafted | sent | bounced | replied
-              is_test: false,
-              tags: [],
-              created_at: createdAt,
-            });
-            imported++;
-          }
           const updated = {
             ...campaign,
-            status: "ready" as const,
-            total_leads_found: items.length,
-            leads_imported: imported,
+            status: "searching" as const,
+            apify_run_id: run.runId,
+            apify_dataset_id: run.defaultDatasetId,
+            apify_status: run.status,
+            error_message: null,
             last_run_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
           };
@@ -1051,18 +1075,111 @@ export const handler: Handler = async (event) => {
           await logActivity({
             agent_id: identity?.kind === "agent" ? identity.agent_id : null,
             category: "research",
-            summary: `Apify scrape complete: ${imported} leads imported for "${campaign.name}"`,
-            details: { campaign_id: id, imported },
+            summary: `Apify run started for "${campaign.name}"`,
+            details: { campaign_id: id, apify_run_id: run.runId },
           });
           return ok(updated);
         } catch (err) {
-          const message = err instanceof Error ? err.message : "Scrape failed";
+          const message = err instanceof Error ? err.message : "Run start failed";
           await writeJson(s, id, {
             ...campaign,
             status: "failed",
             error_message: message,
             updated_at: new Date().toISOString(),
           });
+          return fail(500, message);
+        }
+      }
+
+      case "outreach.campaign.sync": {
+        // Called by the UI on its poll loop while a campaign is "searching".
+        // Queries Apify for run status, imports leads when SUCCEEDED, marks
+        // failed when ABORTED/FAILED/TIMED-OUT. Safe no-op if the campaign
+        // isn't currently running.
+        const { id } = params as Record<string, string>;
+        if (!id) return fail(400, "id required");
+        const s = store(OUTREACH_CAMPAIGNS);
+        const campaign = await readJson<Record<string, unknown>>(s, id);
+        if (!campaign) return fail(404, "campaign not found");
+        if (campaign.status !== "searching" || !campaign.apify_run_id) {
+          return ok({ status: campaign.status, apify_status: campaign.apify_status ?? null, changed: false });
+        }
+        const apifyKey = await readServiceKey("apify");
+        if (!apifyKey) return fail(400, "Apify key not configured");
+
+        try {
+          const runStatus = await getApifyRunStatus(apifyKey, campaign.apify_run_id as string);
+
+          // Terminal states → import or mark failed.
+          if (runStatus.status === "SUCCEEDED") {
+            const datasetId = runStatus.defaultDatasetId ?? (campaign.apify_dataset_id as string | null);
+            if (!datasetId) {
+              const msg = "Apify succeeded but no dataset id was returned";
+              await writeJson(s, id, { ...campaign, status: "failed", error_message: msg, apify_status: runStatus.status, updated_at: new Date().toISOString() });
+              return fail(500, msg);
+            }
+            const structured = campaign.structured_query as StructuredQuery;
+            const items = await getApifyDatasetItems(apifyKey, datasetId, structured.maxResults);
+            const leadsStore = store(OUTREACH_LEADS);
+            let imported = 0;
+            for (const raw of items) {
+              const extracted = extractLeadFromApify(raw);
+              const leadId = nanoid(10);
+              const createdAt = new Date().toISOString();
+              await writeJson(leadsStore, `${id}/${createdAt}-${leadId}`, {
+                id: leadId,
+                campaign_id: id,
+                ...extracted,
+                raw,
+                status: "new",
+                is_test: false,
+                tags: [],
+                created_at: createdAt,
+              });
+              imported++;
+            }
+            // Preserve any test leads that were added while scrape was running
+            // by adding their count to the imported count.
+            const existingLeadsBlobs = await leadsStore.list({ prefix: `${id}/` });
+            const totalAfter = existingLeadsBlobs.blobs.length;
+            const updated = {
+              ...campaign,
+              status: "ready" as const,
+              apify_status: runStatus.status,
+              total_leads_found: items.length,
+              leads_imported: totalAfter,
+              updated_at: new Date().toISOString(),
+            };
+            await writeJson(s, id, updated);
+            await logActivity({
+              agent_id: identity?.kind === "agent" ? identity.agent_id : null,
+              category: "research",
+              summary: `Apify scrape complete: ${imported} leads imported for "${campaign.name}"`,
+              details: { campaign_id: id, imported },
+            });
+            return ok({ status: "ready", apify_status: runStatus.status, imported, changed: true });
+          }
+
+          if (["FAILED", "ABORTED", "TIMED-OUT"].includes(runStatus.status)) {
+            const msg = `Apify run ${runStatus.status.toLowerCase()}: ${runStatus.statusMessage ?? "no details"}`;
+            const updated = {
+              ...campaign,
+              status: "failed" as const,
+              apify_status: runStatus.status,
+              error_message: msg,
+              updated_at: new Date().toISOString(),
+            };
+            await writeJson(s, id, updated);
+            return ok({ status: "failed", apify_status: runStatus.status, changed: true });
+          }
+
+          // Still running — just surface the current Apify status for the UI.
+          if (runStatus.status !== campaign.apify_status) {
+            await writeJson(s, id, { ...campaign, apify_status: runStatus.status, updated_at: new Date().toISOString() });
+          }
+          return ok({ status: "searching", apify_status: runStatus.status, changed: false });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Sync failed";
           return fail(500, message);
         }
       }

@@ -42,6 +42,8 @@ type Campaign = {
   emails_replied: number;
   error_message?: string;
   agentmail_inbox_id?: string;
+  apify_run_id?: string | null;
+  apify_status?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -104,6 +106,38 @@ export default function CampaignDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  // When a scrape is running on Apify's side, poll the sync action every
+  // 4s so we import leads as soon as Apify finishes. Separate from the
+  // general refresh interval so we can drive a tighter loop only when
+  // we're actively waiting on Apify.
+  useEffect(() => {
+    if (!id) return;
+    if (campaign?.status !== "searching") return;
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        const result = await call<{ status: string; apify_status: string | null; changed: boolean }>(
+          "outreach.campaign.sync",
+          { id },
+        );
+        if (!cancelled && result.changed) {
+          // Terminal state — refresh immediately to pull in leads/status.
+          await refresh();
+        }
+      } catch {
+        // Quiet — the regular refresh will surface persistent errors.
+      }
+    };
+    void tick();
+    const t = setInterval(tick, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, campaign?.status]);
+
   async function refresh() {
     if (!id) return;
     try {
@@ -127,10 +161,12 @@ export default function CampaignDetail() {
     setBusyAction("run");
     setErr(null);
     try {
+      // This call returns quickly now — it only *starts* the Apify run.
+      // The sync poller effect will import leads once the run finishes.
       await call("outreach.campaign.run", { id });
       await refresh();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Scrape failed");
+      setErr(e instanceof Error ? e.message : "Scrape failed to start");
     } finally {
       setBusyAction(null);
     }
@@ -225,6 +261,34 @@ export default function CampaignDetail() {
         </GlassCard>
       )}
 
+      {/* Scraping banner — Apify run in progress, UI polls every 4s */}
+      {campaign.status === "searching" && (
+        <GlassCard className="mb-5 bg-gradient-to-br from-primary/[0.08] to-purple/[0.08] border-primary/40">
+          <div className="flex items-center gap-4">
+            <div className="w-10 h-10 rounded-xl bg-primary/20 border border-primary/40 flex items-center justify-center shrink-0">
+              <Loader2 size={18} className="text-primary animate-spin" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-white mb-0.5">Apify scraping Google Maps…</p>
+              <p className="text-xs text-white/65">
+                Typically 30 seconds to 2 minutes. Leads will appear here automatically when the run completes.
+                {campaign.apify_status && (
+                  <span className="font-mono text-primary ml-1">· {campaign.apify_status}</span>
+                )}
+              </p>
+            </div>
+            <a
+              href={campaign.apify_run_id ? `https://console.apify.com/actors/runs/${campaign.apify_run_id}` : "#"}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="shrink-0 text-xs text-primary hover:text-white font-mono"
+            >
+              View on Apify ↗
+            </a>
+          </div>
+        </GlassCard>
+      )}
+
       {/* Strategy summary */}
       <GlassCard className="mb-5 bg-gradient-to-br from-primary/[0.05] to-purple/[0.05]">
         <div className="flex items-start gap-5">
@@ -262,11 +326,23 @@ export default function CampaignDetail() {
       {/* Action bar */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
         <ActionButton
-          disabled={busyAction !== null || !structured}
+          disabled={busyAction !== null || !structured || campaign.status === "searching"}
           onClick={runScrape}
-          busy={busyAction === "run"}
-          label={counters && counters.leads > 0 ? "Re-run scrape" : "Run Apify scrape"}
-          sublabel={counters && counters.leads > 0 ? `${counters.leads} leads imported` : "Fetch real businesses from Google Maps"}
+          busy={busyAction === "run" || campaign.status === "searching"}
+          label={
+            campaign.status === "searching"
+              ? "Scraping…"
+              : counters && counters.leads > 0
+              ? "Re-run scrape"
+              : "Run Apify scrape"
+          }
+          sublabel={
+            campaign.status === "searching"
+              ? `Apify run ${campaign.apify_status?.toLowerCase() ?? "starting"} — results auto-import`
+              : counters && counters.leads > 0
+              ? `${counters.leads} leads imported`
+              : "Fetch real businesses from Google Maps"
+          }
           icon={<Play size={16} />}
           tint="primary"
         />
