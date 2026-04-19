@@ -1430,16 +1430,20 @@ export const handler: Handler = async (event) => {
             subject: draft.subject,
             body_text: draft.body_text,
             body_html: draft.body_html,
+            sender_name: sender_name ?? null,
             status: "drafted",
             created_at: createdAt,
             updated_at: createdAt,
           };
           await writeJson(es, `${campaign_id}/${createdAt}-${emailId}`, record);
-          // Increment campaign emails_generated. Race-safe enough: this
-          // is called serially from one client (the UI loop), not from
-          // concurrent webhooks.
+          // Persist the sender context on the campaign so send can pick
+          // it up as the default From display name. Also increments
+          // emails_generated — safe race-wise since the UI loop is serial.
           await writeJson(cs, campaign_id, {
             ...campaign,
+            default_sender_name: sender_name || (campaign.default_sender_name as string | undefined) || null,
+            default_sender_company: sender_company || (campaign.default_sender_company as string | undefined) || null,
+            default_sender_offer: sender_offer || (campaign.default_sender_offer as string | undefined) || null,
             emails_generated: (campaign.emails_generated as number ?? 0) + 1,
             updated_at: new Date().toISOString(),
           });
@@ -1576,8 +1580,13 @@ export const handler: Handler = async (event) => {
 
         const inbox = await getOrCreateCampaignInbox(agentmailKey, campaign.name as string);
 
+        // Sender display name — per-email overrides campaign-level.
+        // Quotes are stripped to prevent header injection / malformed headers.
+        const sanitizeDisplayName = (name: string) => name.replace(/["\r\n]/g, "").trim();
+        const campaignSenderName = campaign.default_sender_name as string | undefined;
+
         const es = store(OUTREACH_EMAILS);
-        const allEmails = await listJson<{ id: string; campaign_id: string; lead_id: string; to_email: string; subject: string; body_text: string; body_html: string; status: string }>(
+        const allEmails = await listJson<{ id: string; campaign_id: string; lead_id: string; to_email: string; subject: string; body_text: string; body_html: string; status: string; sender_name?: string | null }>(
           es,
           `${campaign_id}/`,
         );
@@ -1589,14 +1598,22 @@ export const handler: Handler = async (event) => {
         for (const em of toSend) {
           try {
             const trackedHtml = rewriteLinksForTracking(em.body_html || `<p>${em.body_text || ""}</p>`, baseUrl, campaign_id, em.lead_id, em.id);
+            const effectiveSender = em.sender_name || campaignSenderName;
+            const sendBody: Record<string, unknown> = {
+              to: [em.to_email],
+              subject: em.subject,
+              text: em.body_text,
+              html: trackedHtml,
+            };
+            if (effectiveSender && inbox.email) {
+              // RFC 5322 From header format: "Display Name" <address>
+              sendBody.headers = {
+                From: `"${sanitizeDisplayName(effectiveSender)}" <${inbox.email}>`,
+              };
+            }
             const r = await agentmailFetch(agentmailKey, `/inboxes/${inbox.inbox_id}/messages/send`, {
               method: "POST",
-              body: JSON.stringify({
-                to: [em.to_email],
-                subject: em.subject,
-                text: em.body_text,
-                html: trackedHtml,
-              }),
+              body: JSON.stringify(sendBody),
             });
             if (!r.ok) {
               const txt = await r.text();

@@ -49,6 +49,9 @@ type Campaign = {
   agentmail_inbox_id?: string;
   apify_run_id?: string | null;
   apify_status?: string | null;
+  default_sender_name?: string | null;
+  default_sender_company?: string | null;
+  default_sender_offer?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -356,7 +359,7 @@ export default function CampaignDetail() {
           <div className="flex-1 space-y-2">
             {structured && (
               <>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <MapPin size={14} className="text-primary" />
                   <span className="text-sm font-medium text-white">{structured.location}</span>
                   <span className="text-xs text-white/45">·</span>
@@ -374,9 +377,13 @@ export default function CampaignDetail() {
                 </div>
               </>
             )}
-            <p className="text-xs text-white/50 pt-1">
-              Status: <span className="text-white/80 font-semibold uppercase tracking-wider">{campaign.status}</span>
-            </p>
+            <div className="flex items-center gap-3 pt-1 flex-wrap">
+              <p className="text-xs text-white/50">
+                Status: <span className="text-white/80 font-semibold uppercase tracking-wider">{campaign.status}</span>
+              </p>
+              <span className="text-white/20">·</span>
+              <SenderNameEditor campaign={campaign} onUpdate={() => void refresh()} />
+            </div>
           </div>
         </div>
       </GlassCard>
@@ -1102,6 +1109,90 @@ function DetailRow({
       <div className="text-[10px] uppercase tracking-widest text-white/45 font-bold mb-0.5">{label}</div>
       <div className={`text-sm ${mono ? "font-mono" : ""} truncate`}>{content}</div>
     </div>
+  );
+}
+
+function SenderNameEditor({ campaign, onUpdate }: { campaign: Campaign; onUpdate: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(campaign.default_sender_name ?? "");
+  const [busy, setBusy] = useState(false);
+
+  // Keep local state in sync when campaign refreshes from the server.
+  useEffect(() => {
+    if (!editing) setValue(campaign.default_sender_name ?? "");
+  }, [campaign.default_sender_name, editing]);
+
+  async function save() {
+    setBusy(true);
+    try {
+      await call("outreach.campaign.update", {
+        id: campaign.id,
+        default_sender_name: value.trim() || null,
+      });
+      setEditing(false);
+      onUpdate();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (editing) {
+    return (
+      <div className="flex items-center gap-1.5">
+        <span className="text-xs text-white/55">From:</span>
+        <input
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void save();
+            if (e.key === "Escape") {
+              setEditing(false);
+              setValue(campaign.default_sender_name ?? "");
+            }
+          }}
+          placeholder="Your display name"
+          autoFocus
+          className="px-2 py-1 rounded-md bg-black/40 border border-primary/50 text-xs text-white font-medium placeholder:text-white/30 focus:outline-none focus:border-primary w-48"
+        />
+        <button
+          onClick={save}
+          disabled={busy}
+          className="px-2 py-1 rounded-md bg-primary/20 hover:bg-primary/30 border border-primary/50 text-primary text-[10px] font-bold uppercase tracking-wider transition disabled:opacity-50"
+        >
+          {busy ? <Loader2 size={10} className="animate-spin" /> : "Save"}
+        </button>
+        <button
+          onClick={() => {
+            setEditing(false);
+            setValue(campaign.default_sender_name ?? "");
+          }}
+          className="px-2 py-1 rounded-md text-white/50 hover:text-white text-[10px] uppercase tracking-wider transition"
+        >
+          Cancel
+        </button>
+      </div>
+    );
+  }
+
+  const current = campaign.default_sender_name;
+  return (
+    <button
+      onClick={() => setEditing(true)}
+      className="group flex items-center gap-1.5 text-xs transition"
+      title="Edit the From display name recipients see"
+    >
+      <span className="text-white/55">From:</span>
+      <span
+        className={`font-semibold transition ${
+          current ? "text-white/85 group-hover:text-white" : "text-amber-300 group-hover:text-amber-200"
+        }`}
+      >
+        {current ?? "+ set your name"}
+      </span>
+      <span className="text-white/30 group-hover:text-white/60 transition">✏</span>
+    </button>
   );
 }
 
