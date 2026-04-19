@@ -207,7 +207,7 @@ export default function WebhookSetupCard() {
                 {copied ? "Copied" : "Copy"}
               </button>
               <a
-                href="https://www.agentmail.to/dashboard"
+                href="https://console.agentmail.to/dashboard/webhooks"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="shrink-0 flex items-center gap-1 px-3 py-2 rounded-md bg-accent/15 hover:bg-accent/25 border border-accent/40 text-accent text-xs font-semibold transition"

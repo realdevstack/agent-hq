@@ -139,7 +139,7 @@ async function agentmailFetch(key: string, path: string, init: RequestInit = {})
   });
 }
 
-type AgentMailInbox = { inbox_id: string; username?: string; domain?: string; display_name?: string };
+type AgentMailInbox = { inbox_id: string; email?: string; display_name?: string };
 
 async function getOrCreateCampaignInbox(key: string, campaignName: string): Promise<AgentMailInbox> {
   // Try to list inboxes first — if we have one already, reuse it. Most
@@ -1444,8 +1444,8 @@ export const handler: Handler = async (event) => {
         if (!agentmailKey) return fail(400, "AgentMail key not configured");
 
         const inbox = await getOrCreateCampaignInbox(agentmailKey, "AgentHQ Health Check");
-        const address = inbox.username && inbox.domain ? `${inbox.username}@${inbox.domain}` : null;
-        if (!address) return fail(500, "Could not resolve AgentMail inbox address");
+        const address = inbox.email ?? null;
+        if (!address) return fail(500, "AgentMail returned an inbox without an email field. Check your AgentMail account setup.");
 
         // Snapshot existing event count so we can tell what's new.
         const { blobs: before } = await store(WEBHOOK_EVENTS).list({ prefix: `${webhook_id}/` });
